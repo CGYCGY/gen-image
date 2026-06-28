@@ -1,0 +1,129 @@
+/**
+ * shared/config.ts — load and parse config.json (pi-image's settings).
+ *
+ * Unlike a deploy manager, pi-image holds NO cloud creds: image generation runs through
+ * the local `codex` CLI on the Codex/ChatGPT subscription. Config is just the spoke model,
+ * the state dir, and how to drive codex. Every field has a default, so a missing config.json
+ * still yields a working extension (the RPC driver, however, needs model/thinking to pin the
+ * spoke to gpt-5.5 — so config.json should exist for real runs).
+ *
+ * Uses only node: built-ins, no pi runtime dependency.
+ */
+
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Directory containing this module (shared/), resolved at runtime. */
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** Absolute project root (shared/ lives directly under it). Self-locating: survives moves. */
+export const PROJECT_DIR = resolve(HERE, "..");
+
+/** Absolute path to config.json (project root, parent of shared/). */
+export const CONFIG_PATH = resolve(PROJECT_DIR, "config.json");
+
+/** How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription). */
+export interface CodexConfig {
+  /** The codex executable (on PATH, or an absolute path). */
+  bin: string;
+  /** Model codex drives the built-in image_gen with (gpt-5.5). Pinned so a changed codex default can't swap it. */
+  model: string;
+  /** CODEX_HOME — also where built-in image_gen writes (generated_images/). */
+  home: string;
+  /** codex --sandbox mode for the exec run. */
+  sandbox: string;
+  /** Enable network for a workspace-write run (the built-in tool reaches Codex's backend). */
+  network: boolean;
+  /** Hard cap for a single codex exec (image gen + model reasoning). */
+  timeoutMs: number;
+}
+
+export interface Config {
+  /** Self-located project root (not from JSON). */
+  projectDir: string;
+  /** State/logs dir (~ expanded). */
+  stateDir: string;
+  /** pi spoke model (e.g. openai-codex/gpt-5.5). Empty = pi default. */
+  model?: string;
+  /** pi spoke thinking tier. Empty = pi default. */
+  thinking?: string;
+  codex: CodexConfig;
+}
+
+/** Expand a leading "~" or "~/" to the user's home directory. */
+export function expandTilde(p: string): string {
+  if (p === "~") return homedir();
+  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  return p;
+}
+
+function asObj(v: unknown): Record<string, unknown> {
+  return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
+}
+function str(o: Record<string, unknown>, key: string, def: string): string {
+  const v = o[key];
+  return typeof v === "string" && v.length > 0 ? v : def;
+}
+function optStr(o: Record<string, unknown>, key: string): string | undefined {
+  const v = o[key];
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+function num(o: Record<string, unknown>, key: string, def: number): number {
+  const v = o[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : def;
+}
+function bool(o: Record<string, unknown>, key: string, def: boolean): boolean {
+  const v = o[key];
+  return typeof v === "boolean" ? v : def;
+}
+
+function parseConfig(raw: unknown): Config {
+  const r = asObj(raw);
+  const codex = asObj(r.codex);
+  return {
+    projectDir: PROJECT_DIR,
+    stateDir: expandTilde(str(r, "stateDir", "~/.pi-image")),
+    model: optStr(r, "model"),
+    thinking: optStr(r, "thinking"),
+    codex: {
+      bin: str(codex, "bin", "codex"),
+      model: str(codex, "model", "gpt-5.5"),
+      home: expandTilde(str(codex, "home", join(homedir(), ".codex"))),
+      sandbox: str(codex, "sandbox", "workspace-write"),
+      network: bool(codex, "network", true),
+      timeoutMs: num(codex, "timeoutMs", 300_000),
+    },
+  };
+}
+
+let cached: Config | null = null;
+
+/** Load (and cache) the parsed config. A missing/invalid file falls back to all-defaults. */
+export function loadConfig(): Config {
+  if (cached) return cached;
+  let raw: unknown = {};
+  try {
+    raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+  } catch {
+    raw = {};
+  }
+  cached = parseConfig(raw);
+  return cached;
+}
+
+export function clearConfigCache(): void {
+  cached = null;
+}
+
+export function getStateDir(): string {
+  return loadConfig().stateDir;
+}
+export function getCodex(): CodexConfig {
+  return loadConfig().codex;
+}
+export function getModelConfig(): { model?: string; thinking?: string } {
+  const c = loadConfig();
+  return { model: c.model, thinking: c.thinking };
+}

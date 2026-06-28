@@ -1,0 +1,21 @@
+{
+  "_about": "Single source of truth for pi-image. Copy to config.json (gitignored) and adjust. pi-image needs no cloud creds — image generation runs through the Codex/ChatGPT subscription via the local `codex` CLI (no OPENAI_API_KEY).",
+
+  "stateDir": "~/.pi-image",
+  "_stateDir_note": "Where pi-image writes its logs (<stateDir>/logs/image.log). The RPC driver also keeps session state here.",
+
+  "model": "openai-codex/gpt-5.5",
+  "_model_note": "The pi spoke (orchestrator) model. openai-codex/* runs on the Codex/ChatGPT subscription. Empty = pi default.",
+  "thinking": "high",
+  "_thinking_note": "Reasoning tier for the spoke. Empty = pi default.",
+
+  "codex": {
+    "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed). All optional; these are the defaults.",
+    "bin": "codex",
+    "model": "gpt-5.5",
+    "home": "~/.codex",
+    "sandbox": "workspace-write",
+    "network": true,
+    "timeoutMs": 300000
+  }
+}
