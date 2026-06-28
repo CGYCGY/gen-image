@@ -1,0 +1,4 @@
+{
+  "_about": "Optional config for the gen-image driver. When this skill lives in-place inside the pi-image repo (.claude/skills/gen-image), the driver self-locates the pi-image checkout and NO config is needed. Set imageDir only when you copy this skill elsewhere (e.g. ~/.claude/skills/), or set the PI_IMAGE_DIR env var instead.",
+  "imageDir": "/abs/path/to/pi-image"
+}
