@@ -1,6 +1,6 @@
 ---
 name: gen-image
-description: Generates or edits an image by conversing with the gated pi-image spoke over pi RPC — sends a natural-language image request, answers any question it asks, and relays the structured result. Use when asked to "generate an image", "create an image", "make a picture/icon/logo", "edit this image", or fill a plan's image slots. Runs on the Codex/ChatGPT subscription (no API key). For several independent images, run one `generate` per image as PARALLEL Bash calls in a single message — sessions are isolated, so concurrent generates are safe and N images take the wall-clock of one.
+description: Generates or edits an image by conversing with the gated pi-image spoke over pi RPC — sends a natural-language image request, answers any question it asks, and relays the structured result. Use when asked to "generate an image", "create an image", "make a picture/icon/logo", "edit this image", or fill a plan's image slots. Runs on the Codex/ChatGPT subscription (no API key). For several independent images, run one `generate` per image as run_in_background Bash calls (NOT foreground — the harness serializes those) — sessions are isolated, so concurrent generates are safe and N images take the wall-clock of one.
 argument-hint: <image request including an absolute out_path> [edit <input_path>]
 allowed-tools: Bash, Read
 user-invocable: true
@@ -20,7 +20,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - Branch on the LAST JSON line's `kind` (`result` | `reply` | `error` | `ok`) — see Cookbook.
 - Every subcommand takes an optional `--session <id>`; each session is a fully isolated spoke (own state, own process). Default session is `main` — except a bare `generate`, which auto-picks a unique ephemeral session, so concurrent one-shot generates NEVER collide.
 - Every output line carries `session`. To follow up on a spoke (answer its question, send the next image), pass that id back via `--session`.
-- For several INDEPENDENT images, PARALLEL fan-out is fastest: issue one `generate` Bash call per image, ALL IN A SINGLE MESSAGE, so they run concurrently — 7 images land in ~2 min instead of ~14. Foreground calls need an explicit long timeout (300000–600000 ms; the 120s default kills a 2-min generation), or use run_in_background and read each task's output on completion. Wall-clock beats warmth; OpenAI does not rate-limit concurrent subscription image_gen calls (verified), though total quota burn is the same. Subagents are NOT needed for parallelism — only reach for one-subagent-per-image when each request might need its own back-and-forth with the spoke.
+- For several INDEPENDENT images, PARALLEL fan-out is fastest: issue one `generate` Bash call per image with run_in_background: true — they run as concurrent processes, so 7 images land in ~2 min instead of ~14. CRITICAL: run_in_background is what parallelizes; multiple FOREGROUND Bash calls are serialized by the harness even when batched in one message (only read-only commands parallelize), so foreground fan-out silently degrades to N×2 min. A single foreground call chaining `generate ... & generate ... & wait` (timeout ≥ 300000 ms) also truly parallelizes. Wall-clock beats warmth; OpenAI does not rate-limit concurrent subscription image_gen calls (verified), though total quota burn is the same. Subagents are NOT needed for parallelism — only reach for one-subagent-per-image when each request might need its own back-and-forth with the spoke.
 - For several images built INTERACTIVELY (back-and-forth, or sequential edits on prior outputs), keep one spoke WARM instead: `up` once → `send` per image → `down` (one boot, many cheap images).
 - Never pass or guess a model — pi-image is pinned to gpt-5.5 in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
 
@@ -63,7 +63,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 2. If no absolute path is given, ask the user for one before sending.
 
 ### Phase 2: Drive the spoke
-1. One image → run the `generate` tool. Several independent images → PARALLEL fan-out: one `generate` Bash call per image, all in one message (see Cookbook). Several interactive/sequential images → run `up`, then `send` per image, then `down`.
+1. One image → run the `generate` tool. Several independent images → PARALLEL fan-out: one run_in_background `generate` Bash call per image (see Cookbook). Several interactive/sequential images → run `up`, then `send` per image, then `down`.
 2. The call is synchronous (1–2 min/image); do not poll or re-run it.
 3. Parse the LAST JSON line and branch (see Cookbook).
 
@@ -86,7 +86,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 
 ### Batch of INDEPENDENT images (parallel fan-out — fastest)
 - **IF:** the request needs several images that don't depend on each other and wall-clock matters
-- **THEN:** issue one `generate` Bash call PER IMAGE, all in a SINGLE message, so they run concurrently. Foreground: set timeout 300000–600000 ms on each (the 120s default kills a ~2-min generation). If part of a bigger task, use run_in_background instead and read each task's output when notified. Bare `generate` auto-isolates per invocation — no session ids to coordinate. Each call prints its own JSON line; if one prints `kind:"reply"`, answer it afterward with `send --session <its session>`. Collect every `result` and report all paths. (One Bash call chaining `generate ... & generate ... & wait` also works; do NOT spawn subagents just for parallelism — only when each image may need its own back-and-forth.)
+- **THEN:** issue one `generate` Bash call PER IMAGE, each with run_in_background: true — they run as concurrent processes; read each task's output when its completion notification arrives. Do NOT fan out as foreground calls: the harness runs non-read-only Bash sequentially even when batched in one message, so that silently becomes N×2 min. (Equally parallel alternative: ONE foreground Bash call chaining `generate ... & generate ... & wait`, timeout ≥ 300000 ms.) Bare `generate` auto-isolates per invocation — no session ids to coordinate. Each call prints its own JSON line; if one prints `kind:"reply"`, answer it afterward with `send --session <its session>`. Collect every `result` and report all paths. Do NOT spawn subagents just for parallelism — only when each image may need its own back-and-forth.
 - **EXAMPLES:** "generate these 7 illustrations", "fill all the plan images fast"
 
 ### Batch of images (warm reuse — sequential)
