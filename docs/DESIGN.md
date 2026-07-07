@@ -23,7 +23,9 @@ names, no codex invocation, no output-file plumbing, no API keys.
 - Not a daemon or a network service. It is a pi subprocess the caller owns over pipes — no HTTP port,
   no token, no portfile.
 - Not an image library/CDN. It writes one file to the absolute path the caller names and is done.
-- Not multi-job-at-once. One purpose, one verb per request, one image at a time.
+- Not multi-job-at-once *per spoke*. One purpose, one verb per request, one image at a time — a
+  batch parallelizes by summoning **multiple isolated spokes** (driver sessions, §6), never by
+  overlapping jobs inside one.
 
 ---
 
@@ -77,15 +79,20 @@ check is moot. `--sandbox workspace-write` + `network_access=true`: the built-in
 backend over the network, which a workspace-write run must enable explicitly. `-c model=gpt-5.5`: pin
 the model so a change to the user's codex default can't silently swap it.
 
-**The newest-file detection guard** (principle #4, *deterministic + fail-closed*). The built-in tool
-**can't choose the output filename** — it writes under `$CODEX_HOME/generated_images/<session>/ig_*.png`.
-So the backend records a timestamp floor before the run (with a small skew margin), and afterward scans
-`generated_images/` for the **newest image at/after that floor**, then `copyFileSync`s it to the
-caller's `out_path` and stat-checks the bytes. The floor is what distinguishes a fresh render from a
-stale leftover: if nothing newer exists, codex produced no image — a **failure**, surfaced with the
-stderr/stdout tail, never a silent copy of an old file. The codex agent is *told* to generate and stop
-(not to move the file), but correctness does not depend on it obeying: an agent's own `cp` would also
-be sandbox-bound and could fall outside an arbitrary caller `out_path`, so the move is done in our code.
+**The session-scoped detection guard** (principle #4, *deterministic + fail-closed*). The built-in tool
+**can't choose the output filename** — it writes under `$CODEX_HOME/generated_images/<session>/ig_*.png`,
+where `<session>` is the run's codex session id, printed in the `codex exec` header (`session id: …`).
+The backend records a timestamp floor before the run (with a small skew margin), parses that id from
+stdout afterward, and scans **only that run's session dir** for the newest image at/after the floor,
+then `copyFileSync`s it to the caller's `out_path` and stat-checks the bytes. Scoping to the run's own
+dir is what makes **concurrent runs safe**: they all share `generated_images/`, so a global
+newest-since scan could copy a *sibling run's* image — silent cross-contamination. (The global scan
+survives only as a logged fallback for a header-format change.) The floor distinguishes a fresh render
+from a stale leftover: if the run's dir has nothing newer, codex produced no image — a **failure**,
+surfaced with the stderr/stdout tail, never a silent copy of an old file. The codex agent is *told* to
+generate and stop (not to move the file), but correctness does not depend on it obeying: an agent's own
+`cp` would also be sandbox-bound and could fall outside an arbitrary caller `out_path`, so the move is
+done in our code.
 
 ---
 
@@ -149,6 +156,15 @@ many, close at the end.
 - **Warm within a run, not forever.** The point is a single batch/plan run, not an always-on daemon
   (see non-goals). `down`/abort at the end of the run; cold start loses nothing — pi-image owns no
   persistent state beyond config and its log.
+- **Parallel sessions — trade warmth for wall-clock.** Each driver session
+  (`--session <id>`, state under `<stateDir>/sessions/<id>/`) is a fully isolated spoke: own FIFO,
+  own state file, own per-session pi `--name` tag (so tearing one down can't pkill a sibling). A bare
+  one-shot `generate` auto-picks a pid-unique ephemeral session, so N concurrent generates — e.g.
+  one caller issuing N parallel `generate` invocations — are isolated **by construction** and N
+  images cost the wall-clock of one (~2 min instead of N×2). OpenAI does not serialize concurrent subscription
+  `image_gen` calls (verified empirically at N=4); quota burn is unchanged, only elapsed time. Each
+  parallel spoke pays its own boot, so for *sequential/interactive* work the single warm session
+  remains the cheaper shape; the two patterns compose (a warm `main` plus ephemeral one-shots).
 
 ---
 

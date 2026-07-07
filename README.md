@@ -144,8 +144,11 @@ Callers don't spawn `pi` themselves — they use the bundled **gen-image** skill
 ```bash
 GENI="bun .claude/skills/gen-image/tools/session.ts"
 $GENI generate "a red fox mascot, flat vector. Save it to /abs/fox.png"   # one-shot
-# or, for a batch (one boot, many images):
+# sequential batch on one warm spoke (one boot, many images):
 $GENI up; $GENI send "...save to /abs/a.png"; $GENI send "...save to /abs/b.png"; $GENI down
+# parallel batch — each bare `generate` gets its own isolated ephemeral session, so N images
+# take the wall-clock of one (~2 min); named sessions via --session <id> work too:
+$GENI generate "...save to /abs/a.png" & $GENI generate "...save to /abs/b.png" & wait
 ```
 
 It self-locates this checkout when in-place; copied elsewhere, set `PI_IMAGE_DIR` or `config.json {imageDir}`.
