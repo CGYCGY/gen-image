@@ -8,10 +8,13 @@
  * never reaches codex (pi principle #2).
  *
  * The built-in tool does NOT let us choose the output filename — it writes under
- * $CODEX_HOME/generated_images/<session>/ig_*.png. So we detect what it produced (newest
- * file since the run started) and copy it ourselves, deterministically, rather than trusting
- * the codex agent to report or move it (the agent's own `cp` would also be sandbox-bound,
- * which an arbitrary caller out_path can fall outside of).
+ * $CODEX_HOME/generated_images/<session>/ig_*.png. So we detect what it produced and copy it
+ * ourselves, deterministically, rather than trusting the codex agent to report or move it
+ * (the agent's own `cp` would also be sandbox-bound, which an arbitrary caller out_path can
+ * fall outside of). Detection is scoped to THIS run's codex session dir (session id parsed
+ * from the exec header) so concurrent runs sharing CODEX_HOME can't pick up each other's
+ * output; the newest-since-start scan over all sessions is only a fallback for a header
+ * format change.
  */
 
 import { copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
@@ -22,6 +25,9 @@ import type { BackendCtx, BackendResult, EditParams, GenerateParams, ImageBacken
 
 const BACKEND_ID = "gpt-image-2";
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i;
+// `codex exec` header line, e.g. "session id: 019f3dd8-7286-7ee3-aa34-72eece646428" — the
+// generated_images subdir for the run is named exactly this id.
+const SESSION_ID_RE = /^session id:\s*([0-9a-f][0-9a-f-]{7,})\s*$/im;
 
 /** Where the built-in image_gen writes by default. */
 function generatedRoot(codexHome: string): string {
@@ -29,10 +35,35 @@ function generatedRoot(codexHome: string): string {
 }
 
 /**
- * Newest image written under generated_images at/after `afterMs`. The afterMs floor is what
- * lets us tell a fresh render from a stale leftover: if nothing newer exists, codex produced
- * no image (failure), so we never silently copy an old one.
+ * Newest image in one session dir at/after `afterMs`. The afterMs floor is what lets us tell
+ * a fresh render from a stale leftover: if nothing newer exists, codex produced no image
+ * (failure), so we never silently copy an old one.
  */
+function newestInDir(dir: string, afterMs: number): string | undefined {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  let best: { path: string; mtime: number } | undefined;
+  for (const f of entries) {
+    if (!IMAGE_RE.test(f)) continue;
+    const fp = join(dir, f);
+    let fstat;
+    try {
+      fstat = statSync(fp);
+    } catch {
+      continue;
+    }
+    if (fstat.mtimeMs >= afterMs && (!best || fstat.mtimeMs > best.mtime)) {
+      best = { path: fp, mtime: fstat.mtimeMs };
+    }
+  }
+  return best?.path;
+}
+
+/** Fallback: newest image across ALL session dirs — races under concurrency; see runCodex. */
 function newestSince(root: string, afterMs: number): string | undefined {
   if (!existsSync(root)) return undefined;
   let best: { path: string; mtime: number } | undefined;
@@ -45,19 +76,10 @@ function newestSince(root: string, afterMs: number): string | undefined {
       continue;
     }
     if (!dstat.isDirectory()) continue;
-    for (const f of readdirSync(dir)) {
-      if (!IMAGE_RE.test(f)) continue;
-      const fp = join(dir, f);
-      let fstat;
-      try {
-        fstat = statSync(fp);
-      } catch {
-        continue;
-      }
-      if (fstat.mtimeMs >= afterMs && (!best || fstat.mtimeMs > best.mtime)) {
-        best = { path: fp, mtime: fstat.mtimeMs };
-      }
-    }
+    const p = newestInDir(dir, afterMs);
+    if (!p) continue;
+    const m = statSync(p).mtimeMs;
+    if (!best || m > best.mtime) best = { path: p, mtime: m };
   }
   return best?.path;
 }
@@ -93,7 +115,13 @@ async function runCodex(ctx: BackendCtx, args: string[], outPath: string, op: st
     env: { CODEX_HOME: ctx.codex.home },
     timeoutMs: ctx.codex.timeoutMs,
   });
-  const produced = newestSince(root, start);
+  // Scope detection to this run's own session dir — concurrent runs share generated_images,
+  // and a global newest-since scan would happily copy a sibling run's image. Once the session
+  // id is known, its dir is authoritative: empty means THIS run produced nothing, even if a
+  // sibling just did.
+  const sessionId = SESSION_ID_RE.exec(r.stdout)?.[1];
+  if (!sessionId) ctx.log.warn("codex exec header had no session id; falling back to global newest-since scan");
+  const produced = sessionId ? newestInDir(join(root, sessionId), start) : newestSince(root, start);
   if (!produced) {
     const tail = (r.stderr.trim() || r.stdout.trim()).slice(-600);
     throw new Error(`codex produced no image (exit ${r.code ?? "killed"}). Tail: ${tail || "(empty)"}`);
