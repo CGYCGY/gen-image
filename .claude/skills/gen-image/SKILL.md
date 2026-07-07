@@ -1,6 +1,6 @@
 ---
 name: gen-image
-description: Generates or edits an image by conversing with the gated pi-image spoke over pi RPC — sends a natural-language image request, answers any question it asks, and relays the structured result. Use when asked to "generate an image", "create an image", "make a picture/icon/logo", "edit this image", or fill a plan's image slots. Runs on the Codex/ChatGPT subscription (no API key).
+description: Generates or edits an image by conversing with the gated pi-image spoke over pi RPC — sends a natural-language image request, answers any question it asks, and relays the structured result. Use when asked to "generate an image", "create an image", "make a picture/icon/logo", "edit this image", or fill a plan's image slots. Runs on the Codex/ChatGPT subscription (no API key). For several independent images, run one `generate` per image as PARALLEL Bash calls in a single message — sessions are isolated, so concurrent generates are safe and N images take the wall-clock of one.
 argument-hint: <image request including an absolute out_path> [edit <input_path>]
 allowed-tools: Bash, Read
 user-invocable: true
@@ -18,39 +18,42 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - The request is natural language; the spoke routes it to generate vs edit. For an edit, name the existing image's absolute path and the change to make.
 - A call is synchronous and may take 1–2 minutes per image — do not poll, time out, or re-run it.
 - Branch on the LAST JSON line's `kind` (`result` | `reply` | `error` | `ok`) — see Cookbook.
-- For several images in one run, prefer `up` once → `send` per image → `down`. This keeps the spoke WARM (one boot, many cheap images) instead of re-paying startup each time.
+- Every subcommand takes an optional `--session <id>`; each session is a fully isolated spoke (own state, own process). Default session is `main` — except a bare `generate`, which auto-picks a unique ephemeral session, so concurrent one-shot generates NEVER collide.
+- Every output line carries `session`. To follow up on a spoke (answer its question, send the next image), pass that id back via `--session`.
+- For several INDEPENDENT images, PARALLEL fan-out is fastest: issue one `generate` Bash call per image, ALL IN A SINGLE MESSAGE, so they run concurrently — 7 images land in ~2 min instead of ~14. Foreground calls need an explicit long timeout (300000–600000 ms; the 120s default kills a 2-min generation), or use run_in_background and read each task's output on completion. Wall-clock beats warmth; OpenAI does not rate-limit concurrent subscription image_gen calls (verified), though total quota burn is the same. Subagents are NOT needed for parallelism — only reach for one-subagent-per-image when each request might need its own back-and-forth with the spoke.
+- For several images built INTERACTIVELY (back-and-forth, or sequential edits on prior outputs), keep one spoke WARM instead: `up` once → `send` per image → `down` (one boot, many cheap images).
 - Never pass or guess a model — pi-image is pinned to gpt-5.5 in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
 
 ## Tools
 
 ### generate
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" generate "<request>"`
-- **Args:** `request (str, required)` — a natural-language image request naming the absolute out_path
-- **Does:** Summons the spoke if needed, sends one request, prints one JSON line; auto-ends the session on a final `result`.
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" generate [--session <id>] "<request>"`
+- **Args:** `request (str, required)` — a natural-language image request naming the absolute out_path; `--session (str, optional)` — omit for a unique ephemeral session (parallel-safe)
+- **Does:** Summons an isolated spoke, sends one request, prints one JSON line; auto-ends the session on a final `result`. Safe to run many at once (each gets its own spoke).
 - **Triggers:** "generate an image", "create an image", "make a picture", "edit this image"
 
 ### send
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" send "<message>"`
-- **Args:** `message (str, required)` — the next image request, or an answer to the spoke's question
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" send [--session <id>] "<message>"`
+- **Args:** `message (str, required)` — the next image request, or an answer to the spoke's question; `--session (str, optional)` — target session (default `main`; use the `session` from a prior output to continue that spoke)
 - **Does:** Sends one prompt to the LIVE session and prints its next JSON line. Use after `up`, or after a `kind:"reply"`.
 - **Triggers:** "next image", "answer the spoke", "another one"
 
 ### up
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" up`
-- **Args:** none
-- **Does:** Starts the persistent warm spoke session (for many images / back-and-forth).
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" up [--session <id>]`
+- **Args:** `--session (str, optional)` — session id (default `main`)
+- **Does:** Starts a persistent warm spoke session (for many images / back-and-forth).
 - **Triggers:** "start the image session", "warm up pi-image"
 
 ### down
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" down`
-- **Args:** none
-- **Does:** Ends the spoke session and frees its state. Idempotent — always safe to call at the end.
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" down [--session <id>]`
+- **Args:** `--session (str, optional)` — session id (default `main`)
+- **Does:** Ends that spoke session and frees its state. Idempotent — always safe to call at the end.
 - **Triggers:** "finished generating", "close the image session"
 
 ### clean
 - **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" clean`
 - **Args:** none
-- **Does:** Kills a stale/leftover spoke process and clears session state.
+- **Does:** Kills ALL stale/leftover spoke processes (every session) and clears all session state.
 - **Triggers:** "spoke stuck", "clean up pi-image", "stale session"
 
 ## Workflow
@@ -60,7 +63,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 2. If no absolute path is given, ask the user for one before sending.
 
 ### Phase 2: Drive the spoke
-1. One image → run the `generate` tool. Several images in one run → run `up`, then `send` per image, then `down`.
+1. One image → run the `generate` tool. Several independent images → PARALLEL fan-out: one `generate` Bash call per image, all in one message (see Cookbook). Several interactive/sequential images → run `up`, then `send` per image, then `down`.
 2. The call is synchronous (1–2 min/image); do not poll or re-run it.
 3. Parse the LAST JSON line and branch (see Cookbook).
 
@@ -73,7 +76,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 
 ### Spoke asks a question
 - **IF:** a tool prints `kind:"reply"`
-- **THEN:** read its `text` (usually it needs an absolute out_path or input_path); resolve it and answer with the `send` tool. Repeat until `kind:"result"`.
+- **THEN:** read its `text` (usually it needs an absolute out_path or input_path); resolve it and answer with the `send` tool, passing `--session <the session from that output line>` so the answer reaches the SAME spoke. Repeat until `kind:"result"`.
 - **EXAMPLES:** "needs an absolute out_path", "which file should I edit?"
 
 ### Spoke won't start / stuck
@@ -81,10 +84,15 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - **THEN:** run the `clean` tool, surface the `detail` (point at `<stateDir>/logs/image.log`), and retry once.
 - **EXAMPLES:** "spoke did not start", "no result within N min"
 
-### Batch of images (warm reuse)
-- **IF:** the request needs several images (e.g. a plan's hero + per-phase slots)
+### Batch of INDEPENDENT images (parallel fan-out — fastest)
+- **IF:** the request needs several images that don't depend on each other and wall-clock matters
+- **THEN:** issue one `generate` Bash call PER IMAGE, all in a SINGLE message, so they run concurrently. Foreground: set timeout 300000–600000 ms on each (the 120s default kills a ~2-min generation). If part of a bigger task, use run_in_background instead and read each task's output when notified. Bare `generate` auto-isolates per invocation — no session ids to coordinate. Each call prints its own JSON line; if one prints `kind:"reply"`, answer it afterward with `send --session <its session>`. Collect every `result` and report all paths. (One Bash call chaining `generate ... & generate ... & wait` also works; do NOT spawn subagents just for parallelism — only when each image may need its own back-and-forth.)
+- **EXAMPLES:** "generate these 7 illustrations", "fill all the plan images fast"
+
+### Batch of images (warm reuse — sequential)
+- **IF:** the request needs several images built interactively, or later images depend on earlier outputs (e.g. edits)
 - **THEN:** run `up` once, run the `send` tool per image, then `down` at the end — one boot, many cheap images.
-- **EXAMPLES:** "fill all the plan images", "generate 6 icons"
+- **EXAMPLES:** "fill all the plan images", "generate 6 icons, tweaking as we go"
 
 ## Supporting Files
 

@@ -17,9 +17,30 @@ export const SKILL_DIR = resolve(TOOLS_DIR, "..");
 export const READY_MARK = "PIIMAGE_READY";
 export const RESULT_MARK = "PIIMAGE_RESULT";
 
-// pi process --name tag; distinctive enough that `pkill -f PI_NAME` targets the spoke's pi
-// without matching this driver's own argv.
-export const PI_NAME = "pi-image:rpc";
+// pi process --name tag prefix; distinctive enough that pkill-by-tag targets spoke pis
+// without matching this driver's own argv. Each session gets its own tag (piName) so tearing
+// one session down can't kill a sibling running in parallel.
+export const PI_NAME_PREFIX = "pi-image:rpc";
+
+/** Per-session pi --name tag. Session ids are charset-validated, so the tag is ERE-safe. */
+export function piName(session: string): string {
+  return `${PI_NAME_PREFIX}:${session}`;
+}
+
+const SESSION_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+/**
+ * Resolve the session id: explicit --session flag, then PI_IMAGE_SESSION env, then "main".
+ * Sessions are what make parallel generation safe — each gets its own state dir, FIFO, and
+ * spoke process. The charset guard keeps ids safe as path segments and pkill ERE patterns.
+ */
+export function resolveSession(flag?: string): string {
+  const s = flag?.trim() || process.env.PI_IMAGE_SESSION?.trim() || "main";
+  if (!SESSION_RE.test(s)) {
+    throw new Error(`invalid session id "${s}" (allowed: letters, digits, - and _, max 40 chars).`);
+  }
+  return s;
+}
 
 export function expandTilde(p: string): string {
   if (p === "~") return homedir();
@@ -109,12 +130,18 @@ export interface Paths {
   state: string;
 }
 
-export function paths(stateDir: string): Paths {
+/** Root under which every session keeps its state; `clean` removes it wholesale. */
+export function sessionsRoot(stateDir: string): string {
+  return join(stateDir, "sessions");
+}
+
+export function paths(stateDir: string, session: string): Paths {
+  const dir = join(sessionsRoot(stateDir), session);
   return {
-    dir: stateDir,
-    fifo: join(stateDir, "geni.in"),
-    out: join(stateDir, "geni.out"),
-    state: join(stateDir, "geni.json"),
+    dir,
+    fifo: join(dir, "geni.in"),
+    out: join(dir, "geni.out"),
+    state: join(dir, "geni.json"),
   };
 }
 
@@ -123,7 +150,7 @@ export function paths(stateDir: string): Paths {
  * bash/read/write/edit/glob unrepresentable; --no-extensions blocks other extensions from
  * re-adding tools; -nc drops ambient AGENTS.md/CLAUDE.md. --mode rpc = stdin/stdout JSONL.
  */
-export function piArgs(imageDir: string, cfg: ImageCfg): string[] {
+export function piArgs(imageDir: string, cfg: ImageCfg, session: string): string[] {
   const args = [
     "--no-extensions",
     "--no-builtin-tools",
@@ -132,9 +159,10 @@ export function piArgs(imageDir: string, cfg: ImageCfg): string[] {
     "rpc",
     "-e",
     join(imageDir, "image", "index.ts"),
-    // Distinctive tag so teardown's `pkill -f` matches ONLY this pi, never the driver itself.
+    // Distinctive per-session tag so teardown's `pkill -f` matches ONLY this session's pi,
+    // never the driver itself or a parallel sibling.
     "--name",
-    PI_NAME,
+    piName(session),
   ];
   if (cfg.model) args.push("--model", cfg.model);
   if (cfg.thinking) args.push("--thinking", cfg.thinking);

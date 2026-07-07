@@ -8,12 +8,18 @@
 // send/generate invocation reaches the same live session. Keeping the spoke warm across many
 // images in one run is the point — see DESIGN. Mirrors the deploy-via-manager driver.
 //
+// Sessions: every subcommand takes an optional `--session <id>` (or PI_IMAGE_SESSION env);
+// each session gets its own state dir, FIFO, and spoke process, so N sessions generate in
+// parallel without touching each other. `up`/`send`/`down` default to session "main". A bare
+// `generate` (no explicit session) uses an ephemeral pid-unique session — concurrent one-shot
+// generates (e.g. N parallel invocations from one caller) are isolated by construction.
+//
 // Subcommands:
 //   generate "<NL request>"  one-shot: bring up if needed, send once; auto-down on a result
 //   up                       start the persistent session (for many images / back-and-forth)
 //   send "<message>"         send one request to the live session (next image / answer a question)
 //   down                     stop the session
-//   clean                    kill a stale spoke + clear session state
+//   clean                    kill ALL stale spokes + clear every session's state
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -38,9 +44,12 @@ import {
   parseNotify,
   paths,
   type Paths,
-  PI_NAME,
+  PI_NAME_PREFIX,
   piArgs,
+  piName,
   resolveImageDir,
+  resolveSession,
+  sessionsRoot,
   takeLines,
 } from "./lib.ts";
 
@@ -55,9 +64,13 @@ type Out =
   | { kind: "reply"; text: string }
   | { kind: "error"; reason: string; detail: string };
 
+// The session this invocation operates on; stamped onto the emitted line so the caller can
+// follow up on the SAME spoke (answer a question, send the next image) via `send --session`.
+let SESSION = "main";
+
 /** Print the single result line the caller parses, and exit. Failed/error → exit 1. */
 function emit(o: Out): never {
-  process.stdout.write(`\n${JSON.stringify(o)}\n`);
+  process.stdout.write(`\n${JSON.stringify({ ...o, session: SESSION })}\n`);
   let code = 1;
   if (o.kind === "ok" || o.kind === "reply") code = 0;
   else if (o.kind === "result") code = o.result?.status === "ok" ? 0 : 1;
@@ -92,7 +105,7 @@ function sessionLive(p: Paths): boolean {
 }
 
 /** SIGTERM the detached spoke, fall back to pkill-by-tag, then SIGKILL survivors; reap files. */
-function tearDown(p: Paths): void {
+function tearDown(p: Paths, session: string): void {
   const st = readState(p);
   const pid = st?.pid;
   const piPid = st?.piPid;
@@ -103,7 +116,9 @@ function tearDown(p: Paths): void {
       /* already gone */
     }
   }
-  spawnSync("pkill", ["-TERM", "-f", PI_NAME]);
+  // Anchor the tag so session "img1" can't also match a parallel "img10" (pkill -f is a
+  // substring ERE over the space-joined cmdline).
+  spawnSync("pkill", ["-TERM", "-f", `${piName(session)}( |$)`]);
   const deadline = Date.now() + 12_000;
   while (pidAlive(pid) && Date.now() < deadline) sleep(0.5);
   if (pidAlive(pid)) {
@@ -116,9 +131,7 @@ function tearDown(p: Paths): void {
         }
     sleep(1);
   }
-  rmSync(p.fifo, { force: true });
-  rmSync(p.out, { force: true });
-  rmSync(p.state, { force: true });
+  rmSync(p.dir, { recursive: true, force: true });
 }
 
 interface BringUp {
@@ -128,7 +141,7 @@ interface BringUp {
 }
 
 /** Ensure a live, READY spoke session (reuse if up); spawn the detached __spoke otherwise. */
-function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths): BringUp {
+function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths, session: string): BringUp {
   if (sessionLive(p)) return { ok: true, reused: true };
   mkdirSync(p.dir, { recursive: true });
   rmSync(p.fifo, { force: true });
@@ -137,7 +150,7 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths): BringUp {
 
   const spoke = spawn(process.execPath, [import.meta.path, "__spoke"], {
     cwd: imageDir,
-    env: { ...process.env, PI_IMAGE_DIR: imageDir },
+    env: { ...process.env, PI_IMAGE_DIR: imageDir, PI_IMAGE_SESSION: session },
     detached: true,
     stdio: "ignore",
   });
@@ -163,7 +176,7 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths): BringUp {
   for (;;) {
     const st = readState(p);
     if (st && !pidAlive(st.pid)) {
-      tearDown(p);
+      tearDown(p, session);
       return {
         ok: false,
         reused: false,
@@ -176,7 +189,7 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths): BringUp {
     }
     if (st?.ready) return { ok: true, reused: false };
     if (Date.now() > readyDeadline) {
-      tearDown(p);
+      tearDown(p, session);
       return {
         ok: false,
         reused: false,
@@ -245,25 +258,26 @@ function sendOnce(p: Paths, message: string): Out {
 
 // ── CLI subcommands ──────────────────────────────────────────────────────────
 
-function cmdGenerate(message: string): never {
+function cmdGenerate(message: string, ephemeral: boolean): never {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "generate requires a natural-language image request." });
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
-  const p = paths(cfg.stateDir);
-  const up = bringUp(imageDir, cfg, p);
+  const p = paths(cfg.stateDir, SESSION);
+  const up = bringUp(imageDir, cfg, p, SESSION);
   if (up.err) emit(up.err);
   const out = sendOnce(p, message);
   // Auto-down when the image CONCLUDED in one shot; leave it up on a question so the caller
-  // can answer with `send` (and `down` when finished).
-  if (out.kind === "result") tearDown(p);
+  // can answer with `send --session <this session>` (and `down` when finished). An ephemeral
+  // session is also reaped on error — nothing will ever come back for it.
+  if (out.kind === "result" || (ephemeral && out.kind === "error")) tearDown(p, SESSION);
   emit(out);
 }
 
 function cmdUp(): never {
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
-  const p = paths(cfg.stateDir);
-  const up = bringUp(imageDir, cfg, p);
+  const p = paths(cfg.stateDir, SESSION);
+  const up = bringUp(imageDir, cfg, p, SESSION);
   if (up.err) emit(up.err);
   emit({ kind: "ok", detail: up.reused ? "spoke already up" : "spoke up and ready" });
 }
@@ -272,16 +286,16 @@ function cmdSend(message: string): never {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "send requires a message." });
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
-  const p = paths(cfg.stateDir);
+  const p = paths(cfg.stateDir, SESSION);
   emit(sendOnce(p, message)); // never auto-downs — the caller controls the session lifecycle
 }
 
 function cmdDown(): never {
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
-  const p = paths(cfg.stateDir);
+  const p = paths(cfg.stateDir, SESSION);
   const had = sessionLive(p) || existsSync(p.state);
-  tearDown(p);
+  tearDown(p, SESSION);
   emit({ kind: "ok", detail: had ? "spoke session ended" : "no live session" });
 }
 
@@ -292,15 +306,16 @@ function cmdClean(): never {
   } catch {
     /* fall back to default state dir for cleanup */
   }
-  const p = paths(expandTilde(stateDir));
-  const r = spawnSync("pkill", ["-TERM", "-f", PI_NAME], { encoding: "utf8" });
+  // Nuke ALL sessions: the un-anchored prefix matches every per-session tag (and the legacy
+  // sessionless one), then the whole sessions root goes; legacy flat geni.* files too.
+  const r = spawnSync("pkill", ["-TERM", "-f", PI_NAME_PREFIX], { encoding: "utf8" });
   sleep(1);
-  rmSync(p.fifo, { force: true });
-  rmSync(p.out, { force: true });
-  rmSync(p.state, { force: true });
+  const dir = expandTilde(stateDir);
+  rmSync(sessionsRoot(dir), { recursive: true, force: true });
+  for (const f of ["geni.in", "geni.out", "geni.json"]) rmSync(`${dir}/${f}`, { force: true });
   emit({
     kind: "ok",
-    detail: r.status === 0 ? "killed stale spoke + cleared session state" : "no stale spoke found; session state cleared",
+    detail: r.status === 0 ? "killed stale spoke(s) + cleared all session state" : "no stale spoke found; session state cleared",
   });
 }
 
@@ -309,11 +324,11 @@ function cmdClean(): never {
 function runSpoke(): never {
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
-  const p = paths(cfg.stateDir);
+  const p = paths(cfg.stateDir, SESSION);
   mkdirSync(p.dir, { recursive: true });
   if (!existsSync(p.fifo)) spawnSync("mkfifo", [p.fifo]);
 
-  const child = spawn("pi", piArgs(imageDir, cfg), {
+  const child = spawn("pi", piArgs(imageDir, cfg, SESSION), {
     cwd: imageDir,
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
@@ -468,16 +483,31 @@ function runSpoke(): never {
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 const sub = process.argv[2];
-const message = process.argv.slice(3).join(" ").trim();
+// Pull --session/-s out of the tail; everything left joins into the message.
+const rest = process.argv.slice(3);
+let sessionFlag: string | undefined;
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === "--session" || rest[i] === "-s") {
+    sessionFlag = rest[i + 1];
+    rest.splice(i, 2);
+    break;
+  }
+}
+const message = rest.join(" ").trim();
 try {
-  if (sub === "generate") cmdGenerate(message);
+  // A bare one-shot generate gets a pid-unique ephemeral session, so N concurrent generates
+  // (fanned out in parallel by one caller) can never collide on a shared spoke. The __spoke child
+  // inherits its session via PI_IMAGE_SESSION, which resolveSession picks up.
+  const ephemeral = sub === "generate" && !sessionFlag && !process.env.PI_IMAGE_SESSION?.trim();
+  SESSION = ephemeral ? `gen-${process.pid}` : resolveSession(sessionFlag);
+  if (sub === "generate") cmdGenerate(message, ephemeral);
   else if (sub === "up") cmdUp();
   else if (sub === "send") cmdSend(message);
   else if (sub === "down") cmdDown();
   else if (sub === "clean") cmdClean();
   else if (sub === "__spoke") runSpoke();
   else {
-    process.stdout.write("usage: session.ts <generate|up|send|down|clean> [message]\n");
+    process.stdout.write("usage: session.ts <generate|up|send|down|clean> [--session <id>] [message]\n");
     process.exit(2);
   }
 } catch (err) {
