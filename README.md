@@ -151,7 +151,26 @@ $GENI up; $GENI send "...save to /abs/a.png"; $GENI send "...save to /abs/b.png"
 $GENI generate "...save to /abs/a.png" & $GENI generate "...save to /abs/b.png" & wait
 ```
 
-It self-locates this checkout when in-place; copied elsewhere, set `PI_IMAGE_DIR` or `config.json {imageDir}`.
+### Installing the skill globally
+
+The driver resolves this checkout through a fallback chain — `PI_IMAGE_DIR` env var → skill-local
+`config.json {imageDir}` → self-location (when the skill runs from inside this repo). Pick the rung
+that fits the machine:
+
+- **Symlink (preferred on Linux/macOS/WSL).** One source of truth, zero config — self-location
+  resolves through the realpathed link, so edits in the repo are live globally:
+
+  ```bash
+  ln -s /abs/path/to/pi-image/.claude/skills/gen-image ~/.claude/skills/gen-image
+  ```
+
+- **Copy + `config.json` (Windows, or git/library-distributed installs).** Windows symlinks need
+  admin or Developer Mode and git checkouts mangle them, so copy the skill directory and add
+  `{"imageDir": "/abs/path/to/pi-image"}` next to its `SKILL.md` (see `config.json.example`).
+  `PI_IMAGE_DIR` overrides both for one-off runs against a different checkout.
+
+Either way the machine still needs the [requirements](#requirements) — the skill is a thin driver,
+not a hermetic bundle.
 
 ## Troubleshooting
 
