@@ -12,7 +12,7 @@
   "codex": {
     "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed). All optional; these are the defaults.",
     "bin": "codex",
-    "model": "gpt-5.5",
+    "model": "gpt-5.6-sol",
     "home": "~/.codex",
     "sandbox": "workspace-write",
     "network": true,

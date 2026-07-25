@@ -13,7 +13,7 @@ ChatGPT/Codex subscription (no `OPENAI_API_KEY`); backends are pluggable. Siblin
 - **`codex`** on PATH, signed in with ChatGPT (Codex subscription). The default `gpt-image-2` backend
   shells out to it; no `OPENAI_API_KEY` is needed or used.
 - **`pi`** (`@earendil-works/pi-coding-agent`) on PATH and authenticated for the `openai-codex`
-  provider. `pi --list-models` should show `openai-codex/gpt-5.5`.
+  provider. `pi --list-models` should show `openai-codex/gpt-5.6-terra`.
 - **`bun`** to run the extension and the smoke test.
 
 ## Quickstart
@@ -49,7 +49,7 @@ absolute path makes the spoke **stop and ask** rather than invent one.
    ```bash
    pi --no-extensions --no-builtin-tools -nc --no-session --mode rpc \
       -e image/index.ts --name pi-image:rpc \
-      --model openai-codex/gpt-5.5 --thinking high
+      --model openai-codex/gpt-5.6-terra --thinking high
    ```
 
 2. **Wait for READY.** The spoke emits an `extension_ui_request` with `method: "notify"` whose text
@@ -65,7 +65,7 @@ absolute path makes the spoke **stop and ask** rather than invent one.
    `<json>` is the `ImageJobResult`:
 
    ```json
-   {"status":"ok","op":"generate","backend":"gpt-image-2","model":"gpt-5.5","out_path":"/abs/out.png","bytes":482931}
+   {"status":"ok","op":"generate","backend":"gpt-image-2","model":"gpt-5.6-sol","out_path":"/abs/out.png","bytes":482931}
    ```
 
    On failure: `{"status":"failed","op":"generate","backend":"gpt-image-2","out_path":"/abs/out.png","error":"<reason>"}`.
@@ -80,16 +80,16 @@ absolute path makes the spoke **stop and ask** rather than invent one.
 ## Configuration
 
 `config.json` (gitignored; copy from `config.json.example`). Every field has a default, but real RPC
-runs should set `model`/`thinking` so the spoke is pinned to `gpt-5.5`. pi-image holds **no cloud
+runs should set `model`/`thinking` so the spoke model is pinned. pi-image holds **no cloud
 creds** — generation rides the Codex subscription via the local `codex` CLI.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `stateDir` | `~/.pi-image` | Logs (`<stateDir>/logs/image.log`) and RPC session state. |
-| `model` | `openai-codex/gpt-5.5` | The pi **spoke** (orchestrator) model. `openai-codex/*` is subscription-backed. |
+| `model` | `openai-codex/gpt-5.6-terra` | The pi **spoke** (orchestrator) model. `openai-codex/*` is subscription-backed. |
 | `thinking` | `high` | Spoke reasoning tier. |
 | `codex.bin` | `codex` | The codex executable (on PATH or absolute). |
-| `codex.model` | `gpt-5.5` | Model codex drives `image_gen` with. Pinned so a changed codex default can't swap it. |
+| `codex.model` | `gpt-5.6-sol` | Model codex drives `image_gen` with (not the renderer — gpt-image-2 renders either way). Pinned so a changed codex default can't swap it. Avoid `code_mode_only` models (terra/luna): they can't emit a direct tool call and burn extra shell round-trips. |
 | `codex.home` | `~/.codex` | `CODEX_HOME`; also where `image_gen` writes (`generated_images/`). |
 | `codex.sandbox` | `workspace-write` | `codex --sandbox` mode for the exec run. |
 | `codex.network` | `true` | Enable network for the workspace-write run (`image_gen` reaches Codex's backend). |
@@ -180,7 +180,7 @@ not a hermetic bundle.
   RESULT and `<stateDir>/logs/image.log`, and confirm `codex` is signed in.
 - **No `PIIMAGE_RESULT`, just a question.** The spoke is missing a required **absolute** path. Reply
   with a `prompt` that names an absolute `out_path` (and `input_path` for edits).
-- **Spoke won't boot.** Confirm `pi --list-models` shows `openai-codex/gpt-5.5` and that `codex` is
+- **Spoke won't boot.** Confirm `pi --list-models` shows the configured `model` and that `codex` is
   signed in to the Codex subscription. Without the provider authenticated the spoke can't start.
 - **Image lands in the wrong place / unexpected format.** `out_path` must be absolute and end in a
   supported extension; otherwise the verb throws before doing any work and the spoke asks again.

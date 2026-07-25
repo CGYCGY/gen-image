@@ -22,7 +22,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - Every output line carries `session`. To follow up on a spoke (answer its question, send the next image), pass that id back via `--session`.
 - For several INDEPENDENT images, PARALLEL fan-out is fastest: issue one `generate` Bash call per image with run_in_background: true — they run as concurrent processes, so 7 images land in ~2 min instead of ~14. CRITICAL: run_in_background is what parallelizes; FOREGROUND Bash calls are serialized by the harness even when batched in one message (only read-only commands parallelize), so foreground fan-out silently degrades to N×2 min. Wall-clock beats warmth; OpenAI does not rate-limit concurrent subscription image_gen calls (verified), though total quota burn is the same. Subagents are NOT needed for parallelism — only reach for one-subagent-per-image when each request might need its own back-and-forth with the spoke.
 - For several images built INTERACTIVELY (back-and-forth, or sequential edits on prior outputs), keep one spoke WARM instead: `up` once → `send` per image → `down` (one boot, many cheap images).
-- Never pass or guess a model — pi-image is pinned to gpt-5.5 in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
+- Never pass or guess a model — pi-image pins its models in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
 
 ## Tools
 

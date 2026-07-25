@@ -63,24 +63,26 @@ reaches a subprocess; only `shared/subprocess.ts` does):
 
 ```bash
 codex exec --skip-git-repo-check --sandbox workspace-write \
-  -c sandbox_workspace_write.network_access=true -c model=gpt-5.5 \
+  -c sandbox_workspace_write.network_access=true -c model=gpt-5.6-sol \
   "<prompt instructing codex to use $imagegen and then stop>"
 ```
 
 **Why `codex exec`, not the OpenAI Images API.** The built-in `image_gen` bills the **ChatGPT/Codex
 subscription** — no `OPENAI_API_KEY`. The Images API is API-key-billed. Shelling out to `codex` is
 the *entire reason* this backend exists: it is the only way to get image generation onto the
-subscription a user already pays for. (The spoke orchestrator model, `openai-codex/gpt-5.5`, is
+subscription a user already pays for. (The spoke orchestrator model, `openai-codex/gpt-5.6-terra`, is
 subscription-backed for the same reason.)
 
 **Why the flags.** `--skip-git-repo-check`: `codex exec` otherwise refuses to run outside a
 trusted/git dir, and the cwd here is `CODEX_HOME` (neither) — image gen never touches a repo, so the
 check is moot. `--sandbox workspace-write` + `network_access=true`: the built-in tool reaches Codex's
-backend over the network, which a workspace-write run must enable explicitly. `-c model=gpt-5.5`: pin
-the model so a change to the user's codex default can't silently swap it.
+backend over the network, which a workspace-write run must enable explicitly. `-c model=gpt-5.6-sol`:
+pin the model so a change to the user's codex default can't silently swap it — sol because it *drives*
+`image_gen` (gpt-image-2 renders either way), and `code_mode_only` models can't call a tool directly.
 
 **The session-scoped detection guard** (principle #4, *deterministic + fail-closed*). The built-in tool
-**can't choose the output filename** — it writes under `$CODEX_HOME/generated_images/<session>/ig_*.png`,
+**can't choose the output filename** — it writes under `$CODEX_HOME/generated_images/<session>/` (basename
+varies by driver model: `call_*.png`, `exec-*.png`),
 where `<session>` is the run's codex session id, printed in the `codex exec` header (`session id: …`).
 The backend records a timestamp floor before the run (with a small skew margin), parses that id from
 stdout afterward, and scans **only that run's session dir** for the newest image at/after the floor,

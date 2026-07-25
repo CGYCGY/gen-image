@@ -5,7 +5,7 @@
  * the local `codex` CLI on the Codex/ChatGPT subscription. Config is just the spoke model,
  * the state dir, and how to drive codex. Every field has a default, so a missing config.json
  * still yields a working extension (the RPC driver, however, needs model/thinking to pin the
- * spoke to gpt-5.5 — so config.json should exist for real runs).
+ * spoke model — so config.json should exist for real runs).
  *
  * Uses only node: built-ins, no pi runtime dependency.
  */
@@ -28,7 +28,12 @@ export const CONFIG_PATH = resolve(PROJECT_DIR, "config.json");
 export interface CodexConfig {
   /** The codex executable (on PATH, or an absolute path). */
   bin: string;
-  /** Model codex drives the built-in image_gen with (gpt-5.5). Pinned so a changed codex default can't swap it. */
+  /**
+   * Model that DRIVES image_gen, not the renderer (gpt-image-2 renders whatever this is).
+   * Pinned so a changed codex default can't swap it. Keep to a `code_mode` model: `code_mode_only`
+   * ones (terra/luna) can't emit a direct tool call and shell out to re-read the imagegen skill
+   * doc first — ~50% more tokens for an identical image.
+   */
   model: string;
   /** CODEX_HOME — also where built-in image_gen writes (generated_images/). */
   home: string;
@@ -45,7 +50,7 @@ export interface Config {
   projectDir: string;
   /** State/logs dir (~ expanded). */
   stateDir: string;
-  /** pi spoke model (e.g. openai-codex/gpt-5.5). Empty = pi default. */
+  /** pi spoke model (e.g. openai-codex/gpt-5.6-terra). Empty = pi default. */
   model?: string;
   /** pi spoke thinking tier. Empty = pi default. */
   thinking?: string;
@@ -89,7 +94,7 @@ function parseConfig(raw: unknown): Config {
     thinking: optStr(r, "thinking"),
     codex: {
       bin: str(codex, "bin", "codex"),
-      model: str(codex, "model", "gpt-5.5"),
+      model: str(codex, "model", "gpt-5.6-sol"),
       home: expandTilde(str(codex, "home", join(homedir(), ".codex"))),
       sandbox: str(codex, "sandbox", "workspace-write"),
       network: bool(codex, "network", true),

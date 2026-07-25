@@ -8,7 +8,8 @@
  * never reaches codex (pi principle #2).
  *
  * The built-in tool does NOT let us choose the output filename — it writes under
- * $CODEX_HOME/generated_images/<session>/ig_*.png. So we detect what it produced and copy it
+ * $CODEX_HOME/generated_images/<session>/, and the basename varies by driver model (`call_*.png`
+ * on a direct tool call, `exec-*.png` via code mode). So we detect what it produced and copy it
  * ourselves, deterministically, rather than trusting the codex agent to report or move it
  * (the agent's own `cp` would also be sandbox-bound, which an arbitrary caller out_path can
  * fall outside of). Detection is scoped to THIS run's codex session dir (session id parsed
