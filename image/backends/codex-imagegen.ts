@@ -154,7 +154,9 @@ export const codexImagegenBackend: ImageBackend = {
       `Preserve everything not mentioned. Generate with the built-in tool and then stop; do ` +
       `not move or copy the file.`;
     // -i attaches the source so the built-in edit flow can see it (built-in edit operates on
-    // images visible in the conversation context).
-    return runCodex(ctx, [...baseArgs(ctx), "-i", inputPath, message], outPath, "edit");
+    // images visible in the conversation context). `--` is REQUIRED: codex declares
+    // `-i, --image <FILE>...` as variadic, so without it the prompt is parsed as a second
+    // filename and codex falls back to an empty stdin ("No prompt provided via stdin").
+    return runCodex(ctx, [...baseArgs(ctx), "-i", inputPath, "--", message], outPath, "edit");
   },
 };
