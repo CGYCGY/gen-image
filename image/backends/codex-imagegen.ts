@@ -12,13 +12,14 @@
  * on a direct tool call, `exec-*.png` via code mode). So we detect what it produced and copy it
  * ourselves, deterministically, rather than trusting the codex agent to report or move it
  * (the agent's own `cp` would also be sandbox-bound, which an arbitrary caller out_path can
- * fall outside of). Detection is scoped to THIS run's codex session dir (session id parsed
- * from the exec header) so concurrent runs sharing CODEX_HOME can't pick up each other's
- * output; the newest-since-start scan over all sessions is only a fallback for a header
- * format change.
+ * fall outside of). Detection is scoped to THIS run's codex session dir, whose id we read off
+ * the `--json` event stream, so concurrent runs sharing CODEX_HOME can't pick up each other's
+ * output. There is deliberately NO cross-session fallback: an unidentifiable session fails the
+ * run loudly, because the only alternative — newest image anywhere under generated_images —
+ * hands a sibling run's image to this caller whenever two runs overlap.
  */
 
-import { copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { runCommand } from "../../shared/subprocess.ts";
@@ -26,9 +27,16 @@ import type { BackendCtx, BackendResult, EditParams, GenerateParams, ImageBacken
 
 const BACKEND_ID = "gpt-image-2";
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i;
-// `codex exec` header line, e.g. "session id: 019f3dd8-7286-7ee3-aa34-72eece646428" — the
-// generated_images subdir for the run is named exactly this id.
-const SESSION_ID_RE = /^session id:\s*([0-9a-f][0-9a-f-]{7,})\s*$/im;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One `codex exec --json` JSONL event; only the fields we consume are modelled. */
+interface CodexEvent {
+  /** From `thread.started`. Older codex builds called the same id `session_id`. */
+  thread_id?: string;
+  session_id?: string;
+  item?: { type?: string; text?: string };
+  error?: { message?: string };
+}
 
 /** Where the built-in image_gen writes by default. */
 function generatedRoot(codexHome: string): string {
@@ -64,25 +72,40 @@ function newestInDir(dir: string, afterMs: number): string | undefined {
   return best?.path;
 }
 
-/** Fallback: newest image across ALL session dirs — races under concurrency; see runCodex. */
-function newestSince(root: string, afterMs: number): string | undefined {
-  if (!existsSync(root)) return undefined;
-  let best: { path: string; mtime: number } | undefined;
-  for (const sess of readdirSync(root)) {
-    const dir = join(root, sess);
-    let dstat;
+/** Parse `codex exec --json` stdout. Non-JSON lines (e.g. "Reading additional input from
+ * stdin...") are interleaved on stdout, so unparseable lines are skipped rather than fatal. */
+function parseEvents(stdout: string): CodexEvent[] {
+  const events: CodexEvent[] = [];
+  for (const line of stdout.split("\n")) {
+    const s = line.trim();
+    if (!s.startsWith("{")) continue;
     try {
-      dstat = statSync(dir);
+      events.push(JSON.parse(s) as CodexEvent);
     } catch {
       continue;
     }
-    if (!dstat.isDirectory()) continue;
-    const p = newestInDir(dir, afterMs);
-    if (!p) continue;
-    const m = statSync(p).mtimeMs;
-    if (!best || m > best.mtime) best = { path: p, mtime: m };
   }
-  return best?.path;
+  return events;
+}
+
+/** The run's codex session id — the `generated_images` subdir is named exactly this. */
+function sessionIdOf(events: CodexEvent[]): string | undefined {
+  for (const e of events) {
+    const id = e.thread_id ?? e.session_id;
+    if (typeof id === "string" && UUID_RE.test(id)) return id;
+  }
+  return undefined;
+}
+
+/** Best available explanation of a failed run: what the agent said, else raw output. */
+function failureTail(events: CodexEvent[], stdout: string, stderr: string): string {
+  const said: string[] = [];
+  for (const e of events) {
+    if (e.error?.message) said.push(e.error.message);
+    if (e.item?.type === "agent_message" && e.item.text) said.push(e.item.text);
+  }
+  const text = said.join("\n").trim() || stderr.trim() || stdout.trim();
+  return text.slice(-600) || "(empty)";
 }
 
 function hints(size?: string, quality?: string): string {
@@ -96,7 +119,10 @@ function hints(size?: string, quality?: string): string {
 function baseArgs(ctx: BackendCtx): string[] {
   // --skip-git-repo-check: codex exec otherwise refuses outside a trusted/git dir, and our
   // cwd ($CODEX_HOME) is neither. Image gen doesn't touch the repo, so the check is moot here.
-  const a = ["exec", "--skip-git-repo-check", "--sandbox", ctx.codex.sandbox];
+  // --json: codex ≥0.146 no longer prints the human-readable "session id: <uuid>" header we
+  // used to scrape, and we cannot attribute an image without that id. The JSONL event stream
+  // (`thread.started` → thread_id) is the machine contract and carries the final agent message too.
+  const a = ["exec", "--skip-git-repo-check", "--json", "--sandbox", ctx.codex.sandbox];
   // The built-in image_gen call reaches Codex's backend over the network; a workspace-write
   // run needs network explicitly enabled (mirrors the proven manual invocation).
   if (ctx.codex.network && ctx.codex.sandbox === "workspace-write") {
@@ -116,16 +142,20 @@ async function runCodex(ctx: BackendCtx, args: string[], outPath: string, op: st
     env: { CODEX_HOME: ctx.codex.home },
     timeoutMs: ctx.codex.timeoutMs,
   });
-  // Scope detection to this run's own session dir — concurrent runs share generated_images,
-  // and a global newest-since scan would happily copy a sibling run's image. Once the session
-  // id is known, its dir is authoritative: empty means THIS run produced nothing, even if a
-  // sibling just did.
-  const sessionId = SESSION_ID_RE.exec(r.stdout)?.[1];
-  if (!sessionId) ctx.log.warn("codex exec header had no session id; falling back to global newest-since scan");
-  const produced = sessionId ? newestInDir(join(root, sessionId), start) : newestSince(root, start);
+  const events = parseEvents(r.stdout);
+  const tail = () => failureTail(events, r.stdout, r.stderr);
+  // Without the session id every candidate image is unattributable, so failing here is the
+  // whole point: concurrent runs share generated_images and picking the newest one across all
+  // of them silently returns a sibling's image.
+  const sessionId = sessionIdOf(events);
+  if (!sessionId) {
+    throw new Error(`codex exec reported no session id (exit ${r.code ?? "killed"}). Tail: ${tail()}`);
+  }
+  // The session dir is authoritative: empty means THIS run produced nothing, even if a sibling
+  // just did.
+  const produced = newestInDir(join(root, sessionId), start);
   if (!produced) {
-    const tail = (r.stderr.trim() || r.stdout.trim()).slice(-600);
-    throw new Error(`codex produced no image (exit ${r.code ?? "killed"}). Tail: ${tail || "(empty)"}`);
+    throw new Error(`codex produced no image in session ${sessionId} (exit ${r.code ?? "killed"}). Tail: ${tail()}`);
   }
   copyFileSync(produced, outPath);
   const bytes = statSync(outPath).size;
