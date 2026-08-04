@@ -9,6 +9,22 @@
   "thinking": "high",
   "_thinking_note": "Reasoning tier for the spoke. Empty = pi default.",
 
+  "maxConcurrentRenders": 20,
+  "_maxConcurrentRenders_note": "Ceiling on concurrent renders, enforced machine-wide via a semaphore in stateDir (every terminal, agent and driver session shares it). Excess callers QUEUE, never fail. A tuning limit for provider throttling and local RAM — not a correctness mechanism. 20 is a judgement call: drop it if throttling appears, raise it if wall-clock matters.",
+
+  "keepSourceImages": true,
+  "_keepSourceImages_note": "Keep codex's own copy under CODEX_HOME/generated_images after delivery. true while the cross-assignment investigation is open (the sources are the evidence trail). false makes delivery a move, which is what stops generated_images growing ~2 MB per image forever.",
+
+  "output": {
+    "_note": "How the finished render reaches out_path. Codex always emits PNG; this is a post-render step. The bytes at out_path ALWAYS match its extension.",
+    "format": "preserve",
+    "_format_note": "preserve (honour the out_path extension) | webp | png | jpeg. A non-preserve value rewrites the extension, and the real path comes back as out_path with the original as requested_path. Any format added here must first be verified readable by `codex exec -i`, since today's output is tomorrow's edit input (webp: verified).",
+    "quality": 80,
+    "_quality_note": "1-100, lossy formats only. The ENCODER setting — unrelated to the verbs' `quality` render hint, which is prose pasted into the codex prompt. 80 measured 11.6x smaller than PNG.",
+    "effort": 6,
+    "_effort_note": "0-6, libwebp method. 6 is 5.6% smaller than 4 for ~240 ms against a ~120 s render."
+  },
+
   "codex": {
     "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed). All optional; these are the defaults.",
     "bin": "codex",

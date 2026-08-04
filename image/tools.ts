@@ -7,12 +7,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { getCodex } from "../shared/config.ts";
+import { loadConfig } from "../shared/config.ts";
 import type { Logger } from "../shared/log.ts";
 import { validateInputPath, validateOutPath } from "../shared/sandbox.ts";
 import type { ImageJobResult } from "../shared/types.ts";
 
 import { DEFAULT_BACKEND_ID, resolveBackend } from "./backends/index.ts";
+import type { BackendCtx, BackendResult } from "./backends/types.ts";
 
 /** The complete verb set. Passed to pi.setActiveTools as the gate's allowlist. */
 export const VERB_NAMES = ["generate_image", "edit_image"] as const;
@@ -26,6 +27,40 @@ export interface ImageToolDeps {
 
 function ok(text: string, details?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text }], details };
+}
+
+function backendCtx(roleLog: Logger): BackendCtx {
+  const cfg = loadConfig();
+  return {
+    log: roleLog,
+    codex: cfg.codex,
+    output: cfg.output,
+    stateDir: cfg.stateDir,
+    maxConcurrentRenders: cfg.maxConcurrentRenders,
+    keepSourceImages: cfg.keepSourceImages,
+    onProgress: (m) => roleLog.debug(m),
+  };
+}
+
+/** Everything the backend derived in code. `bytes` and `format` always describe out_path. */
+function resultOf(op: ImageJobResult["op"], r: BackendResult): ImageJobResult {
+  return {
+    status: "ok",
+    op,
+    backend: r.backend,
+    model: r.model,
+    out_path: r.outPath,
+    format: r.format,
+    requested_path: r.requestedPath,
+    bytes: r.bytes,
+    warning: r.warning,
+  };
+}
+
+function okText(verb: string, r: BackendResult): string {
+  const moved = r.requestedPath ? ` (requested ${r.requestedPath})` : "";
+  const warned = r.warning ? ` WARNING: ${r.warning}` : "";
+  return `${verb} via ${r.backend} → ${r.outPath}${moved} (${r.format}, ${r.bytes} bytes).${warned}`;
 }
 
 export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void {
@@ -59,12 +94,9 @@ export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void 
       const outPath = validateOutPath(p.out_path);
       const backend = resolveBackend(p.backend);
       try {
-        const r = await backend.generate(
-          { prompt: p.prompt, outPath, size: p.size, quality: p.quality },
-          { log: roleLog, codex: getCodex(), onProgress: (m) => roleLog.debug(m) },
-        );
-        concludeJob(ctx, { status: "ok", op: "generate", backend: r.backend, model: r.model, out_path: r.outPath, bytes: r.bytes });
-        return ok(`Generated image via ${r.backend} → ${r.outPath} (${r.bytes} bytes).`, { ...r });
+        const r = await backend.generate({ prompt: p.prompt, outPath, size: p.size, quality: p.quality }, backendCtx(roleLog));
+        concludeJob(ctx, resultOf("generate", r));
+        return ok(okText("Generated image", r), { ...r });
       } catch (err) {
         // A generation failure is TERMINAL for this job — conclude with a structured failed
         // result so the caller always gets a verdict, never a prose error to parse.
@@ -112,10 +144,10 @@ export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void 
       try {
         const r = await backend.edit(
           { instruction: p.instruction, inputPath, outPath, size: p.size, quality: p.quality },
-          { log: roleLog, codex: getCodex(), onProgress: (m) => roleLog.debug(m) },
+          backendCtx(roleLog),
         );
-        concludeJob(ctx, { status: "ok", op: "edit", backend: r.backend, model: r.model, out_path: r.outPath, bytes: r.bytes });
-        return ok(`Edited image via ${r.backend} → ${r.outPath} (${r.bytes} bytes).`, { ...r });
+        concludeJob(ctx, resultOf("edit", r));
+        return ok(okText("Edited image", r), { ...r });
       } catch (err) {
         const error = (err as Error).message;
         concludeJob(ctx, { status: "failed", op: "edit", backend: backend.id, out_path: outPath, error });

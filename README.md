@@ -88,12 +88,17 @@ creds** — generation rides the Codex subscription via the local `codex` CLI.
 | `stateDir` | `~/.pi-image` | Logs (`<stateDir>/logs/image.log`) and RPC session state. |
 | `model` | `openai-codex/gpt-5.6-terra` | The pi **spoke** (orchestrator) model. `openai-codex/*` is subscription-backed. |
 | `thinking` | `high` | Spoke reasoning tier. |
+| `maxConcurrentRenders` | `20` | Ceiling on concurrent renders, enforced **machine-wide** by a semaphore in `stateDir` — every terminal, agent and session shares it. Excess callers **queue**, never fail. A tuning limit (provider throttling + local RAM), not a correctness mechanism. |
+| `keepSourceImages` | `true` | Keep codex's own copy under `generated_images/` after delivery. `false` makes delivery a move, so codex stops accumulating a duplicate of every image ever rendered. |
+| `output.format` | `preserve` | `preserve` honours the `out_path` extension; `webp`/`png`/`jpeg` rewrite it (the real path comes back as `out_path`, the original as `requested_path`). **The bytes at `out_path` always match its extension.** |
+| `output.quality` | `80` | Encoder quality, 1–100, lossy formats only. Distinct from the verbs' `quality` *render* hint. |
+| `output.effort` | `6` | libwebp method, 0–6. Higher is smaller and slower. |
 | `codex.bin` | `codex` | The codex executable (on PATH or absolute). |
 | `codex.model` | `gpt-5.6-sol` | Model codex drives `image_gen` with (not the renderer — gpt-image-2 renders either way). Pinned so a changed codex default can't swap it. Avoid `code_mode_only` models (terra/luna): they can't emit a direct tool call and burn extra shell round-trips. |
 | `codex.home` | `~/.codex` | `CODEX_HOME`; also where `image_gen` writes (`generated_images/`). |
 | `codex.sandbox` | `workspace-write` | `codex --sandbox` mode for the exec run. |
 | `codex.network` | `true` | Enable network for the workspace-write run (`image_gen` reaches Codex's backend). |
-| `codex.timeoutMs` | `300000` | Hard cap for one `codex exec` (image gen + reasoning). |
+| `codex.timeoutMs` | `900000` | Hard cap for one `codex exec` (image gen + reasoning). A backstop against a hung codex, not an operating limit. |
 
 ## Backends
 
@@ -129,7 +134,9 @@ pi-image/
 │   ├── tools.ts                  the two verbs; concludeJob emits RESULT
 │   └── backends/
 │       ├── types.ts              ImageBackend interface
-│       ├── codex-imagegen.ts     gpt-image-2 backend (codex exec → image_gen)
+│       ├── codex-imagegen.ts     gpt-image-2 backend (codex exec → image_gen) + deliver()
+│       ├── claims.ts             claim each codex source image exactly once, machine-wide
+│       ├── semaphore.ts          state-dir render slots (maxConcurrentRenders; excess queues)
 │       └── index.ts              registry / resolveBackend
 ├── .claude/skills/gen-image/    driver skill: callers invoke this to reach the spoke over RPC
 │   ├── SKILL.md                  generate / send / up / down / clean tools (+ cookbook)

@@ -15,6 +15,12 @@ export interface RunResult {
   stderr: string;
   /** null when the process was killed (timeout) or never spawned (spawn error). */
   code: number | null;
+  /**
+   * True only when WE killed the run on `timeoutMs`. `code` alone cannot tell that apart from a
+   * spawn error, and the two need opposite diagnoses: a timed-out render produced no image
+   * because we stopped it, not because detection failed.
+   */
+  timedOut: boolean;
 }
 
 export interface RunOpts {
@@ -42,7 +48,7 @@ export function runCommand(bin: string, args: string[], opts: RunOpts): Promise<
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      resolve({ stdout, stderr: stderr + `\n[timeout after ${timeoutMs}ms]`, code: null });
+      resolve({ stdout, stderr: stderr + `\n[timeout after ${timeoutMs}ms]`, code: null, timedOut: true });
     }, timeoutMs);
     child.stdout?.on("data", (c: Buffer) => (stdout += c.toString("utf8")));
     child.stderr?.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
@@ -50,13 +56,13 @@ export function runCommand(bin: string, args: string[], opts: RunOpts): Promise<
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr: stderr + "\n" + err.message, code: null });
+      resolve({ stdout, stderr: stderr + "\n" + err.message, code: null, timedOut: false });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, code });
+      resolve({ stdout, stderr, code, timedOut: false });
     });
   });
 }

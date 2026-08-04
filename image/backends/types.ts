@@ -8,7 +8,7 @@
  * subscription-billed; API backends are key-billed (see DESIGN).
  */
 
-import type { CodexConfig } from "../../shared/config.ts";
+import type { CodexConfig, OutputConfig } from "../../shared/config.ts";
 import type { Logger } from "../../shared/log.ts";
 
 export interface GenerateParams {
@@ -33,14 +33,29 @@ export interface EditParams {
 export interface BackendResult {
   backend: string;
   model: string;
+  /** Where the bytes actually landed — not necessarily the requested path (see requestedPath). */
   outPath: string;
   bytes: number;
+  /** Format of the delivered bytes. Always matches outPath's extension. */
+  format: string;
+  /** The caller's original out_path; set ONLY when the configured format rewrote the extension. */
+  requestedPath?: string;
+  /** Non-fatal degradation, e.g. an encode failure that fell back to the original PNG. */
+  warning?: string;
 }
 
 export interface BackendCtx {
   log: Logger;
   /** Codex driver settings (used by codex-backed backends; ignored by API backends). */
   codex: CodexConfig;
+  /** How the finished render is delivered (format/quality); backend-agnostic. */
+  output: OutputConfig;
+  /** Machine-wide coordination lives here: render slots and source claims. */
+  stateDir: string;
+  /** Ceiling on concurrent renders across every process on the host. */
+  maxConcurrentRenders: number;
+  /** Leave the backend's own copy of the render in place after delivering it. */
+  keepSourceImages: boolean;
   /** Optional progress sink for human-facing status; never the result channel. */
   onProgress?: (message: string) => void;
 }

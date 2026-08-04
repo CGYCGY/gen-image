@@ -34,10 +34,16 @@ export interface ImageJobResult {
   backend?: string;
   /** Underlying model (e.g. "gpt-5.6-sol" driving the built-in image_gen). */
   model?: string;
-  /** Absolute path the image was written to. */
+  /** Absolute path the image was written to. May differ from what the caller asked for. */
   out_path?: string;
+  /** Format of the bytes actually written — always matches out_path's extension. */
+  format?: string;
+  /** The caller's original out_path; present ONLY when the configured format rewrote it. */
+  requested_path?: string;
   /** Size of the written file in bytes (a positive value is the proof it landed). */
   bytes?: number;
+  /** Non-fatal degradation, e.g. the encode failed and the original PNG was delivered instead. */
+  warning?: string;
   /** Failure reason; presence accompanies status:"failed". */
   error?: string;
 }

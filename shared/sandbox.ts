@@ -15,7 +15,13 @@ import { dirname, isAbsolute, resolve } from "node:path";
 
 const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
 
-/** Validate + prepare an absolute output image path; creates the parent dir. Returns resolved path. */
+/**
+ * Validate + prepare an absolute output image path; creates the parent dir. Returns resolved path.
+ *
+ * This is a guard, NOT a format decision: the delivered format is resolved later by the backend's
+ * deliver() from `output.format` (which may rewrite this extension). All this asserts is that the
+ * caller named a plausible image destination.
+ */
 export function validateOutPath(p: string): string {
   if (typeof p !== "string" || p.length === 0) throw new Error("out_path is required.");
   if (!isAbsolute(p)) throw new Error(`out_path must be an absolute path (got "${p}").`);

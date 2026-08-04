@@ -81,7 +81,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 
 ### Image concluded
 - **IF:** a tool prints `kind:"result"`
-- **THEN:** if `status=="ok"`, report `out_path` + `bytes`; if `"failed"`, surface `error`. A one-shot `generate` already auto-ended; after `up`/`send`, run the `down` tool when finished.
+- **THEN:** if `status=="ok"`, report the RETURNED `out_path` + `bytes` — the returned path, not the one you asked for: the backend may rewrite the extension to match the configured delivery format (`requested_path` present = the file is NOT at the path you requested). If `warning` is present, surface it verbatim. If `"failed"`, surface `error`. A one-shot `generate` already auto-ended; after `up`/`send`, run the `down` tool when finished.
 - **EXAMPLES:** "result status:ok", "image saved"
 
 ### Spoke asks a question
@@ -117,4 +117,5 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 ## Report
 
 - Relay the spoke's result faithfully: a job succeeded ONLY when the line is `kind:"result"` AND `status=="ok"` — report its `out_path` and `bytes`. On anything else, report it as failed and surface `error` (or the `reply` text).
+- Always report the result's `out_path`, never the path you requested — they differ whenever `requested_path` is present. Surface `warning` whenever it is set.
 - When several images were generated, list each path.

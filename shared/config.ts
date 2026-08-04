@@ -50,6 +50,24 @@ export interface CodexConfig {
   timeoutMs: number;
 }
 
+/** Delivery format for the finished render. Codex always emits PNG; this is a post-render step. */
+export type OutputFormat = "preserve" | "png" | "jpeg" | "webp";
+
+/**
+ * How a finished render is delivered to the caller's out_path.
+ *
+ * `quality` is the ENCODER setting, unrelated to the verbs' `quality` render hint (which is prose
+ * pasted into the codex prompt). Merging the two would cross-wire an encoder knob with a prompt.
+ */
+export interface OutputConfig {
+  /** "preserve" honours the out_path extension; anything else rewrites it (see deliver()). */
+  format: OutputFormat;
+  /** 1-100, lossy formats only. 80 measured at 11.6x smaller than PNG with no visible loss. */
+  quality: number;
+  /** 0-6 libwebp method. 6 is 5.6% smaller than 4 for ~240 ms against a ~120 s render. */
+  effort: number;
+}
+
 export interface Config {
   /** Self-located project root (not from JSON). */
   projectDir: string;
@@ -59,6 +77,21 @@ export interface Config {
   model?: string;
   /** pi spoke thinking tier. Empty = pi default. */
   thinking?: string;
+  /**
+   * Ceiling on concurrent codex renders, enforced machine-wide through a state-dir semaphore.
+   * A TUNING limit (provider throttling + local RAM: each render is a full codex subprocess),
+   * never a correctness mechanism — excess callers queue rather than fail. The right number is
+   * unknown and provider-dependent; 20 is a judgement call expected to move with evidence.
+   */
+  maxConcurrentRenders: number;
+  /**
+   * Keep codex's own copy of the render under CODEX_HOME/generated_images after delivery.
+   * True while the cross-assignment investigation is open: the source files are the only trail
+   * that makes a mis-delivery diagnosable at all. False makes delivery a move, which is what
+   * stops generated_images growing ~2 MB per image forever.
+   */
+  keepSourceImages: boolean;
+  output: OutputConfig;
   codex: CodexConfig;
 }
 
@@ -89,14 +122,38 @@ function bool(o: Record<string, unknown>, key: string, def: boolean): boolean {
   return typeof v === "boolean" ? v : def;
 }
 
+const OUTPUT_FORMATS: readonly OutputFormat[] = ["preserve", "png", "jpeg", "webp"];
+
+function clampInt(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+/**
+ * An unknown format falls back to "preserve" rather than throwing: honouring the caller's
+ * extension is the one behaviour that is always correct. Any format added here must first be
+ * verified as readable by `codex exec -i`, since today's output is tomorrow's edit input.
+ */
+function outputFormat(o: Record<string, unknown>): OutputFormat {
+  const v = o.format;
+  return OUTPUT_FORMATS.includes(v as OutputFormat) ? (v as OutputFormat) : "preserve";
+}
+
 function parseConfig(raw: unknown): Config {
   const r = asObj(raw);
   const codex = asObj(r.codex);
+  const output = asObj(r.output);
   return {
     projectDir: PROJECT_DIR,
     stateDir: expandTilde(str(r, "stateDir", "~/.pi-image")),
     model: optStr(r, "model"),
     thinking: optStr(r, "thinking"),
+    maxConcurrentRenders: clampInt(num(r, "maxConcurrentRenders", 20), 1, 200),
+    keepSourceImages: bool(r, "keepSourceImages", true),
+    output: {
+      format: outputFormat(output),
+      quality: clampInt(num(output, "quality", 80), 1, 100),
+      effort: clampInt(num(output, "effort", 6), 0, 6),
+    },
     codex: {
       bin: str(codex, "bin", "codex"),
       model: str(codex, "model", "gpt-5.6-sol"),
@@ -132,6 +189,9 @@ export function getStateDir(): string {
 }
 export function getCodex(): CodexConfig {
   return loadConfig().codex;
+}
+export function getOutput(): OutputConfig {
+  return loadConfig().output;
 }
 export function getModelConfig(): { model?: string; thinking?: string } {
   const c = loadConfig();
