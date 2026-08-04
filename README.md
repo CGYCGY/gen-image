@@ -89,7 +89,7 @@ creds** — generation rides the Codex subscription via the local `codex` CLI.
 | `model` | `openai-codex/gpt-5.6-terra` | The pi **spoke** (orchestrator) model. `openai-codex/*` is subscription-backed. |
 | `thinking` | `high` | Spoke reasoning tier. |
 | `maxConcurrentRenders` | `20` | Ceiling on concurrent renders, enforced **machine-wide** by a semaphore in `stateDir` — every terminal, agent and session shares it. Excess callers **queue**, never fail. A tuning limit (provider throttling + local RAM), not a correctness mechanism. |
-| `keepSourceImages` | `true` | Keep codex's own copy under `generated_images/` after delivery. `false` makes delivery a move, so codex stops accumulating a duplicate of every image ever rendered. |
+| `keepSourceImages` | `false` | Keep codex's own copy under `generated_images/` after delivery. `false` makes delivery a **move**, so codex stops accumulating a duplicate of every image ever rendered. Set `true` to keep the sources as an evidence trail while investigating a mis-delivery. |
 | `output.format` | `preserve` | `preserve` honours the `out_path` extension; `webp`/`png`/`jpeg` rewrite it (the real path comes back as `out_path`, the original as `requested_path`). **The bytes at `out_path` always match its extension.** |
 | `output.quality` | `80` | Encoder quality, 1–100, lossy formats only. Distinct from the verbs' `quality` *render* hint. |
 | `output.effort` | `6` | libwebp method, 0–6. Higher is smaller and slower. |

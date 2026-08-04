@@ -12,8 +12,8 @@
   "maxConcurrentRenders": 20,
   "_maxConcurrentRenders_note": "Ceiling on concurrent renders, enforced machine-wide via a semaphore in stateDir (every terminal, agent and driver session shares it). Excess callers QUEUE, never fail. A tuning limit for provider throttling and local RAM — not a correctness mechanism. 20 is a judgement call: drop it if throttling appears, raise it if wall-clock matters.",
 
-  "keepSourceImages": true,
-  "_keepSourceImages_note": "Keep codex's own copy under CODEX_HOME/generated_images after delivery. true while the cross-assignment investigation is open (the sources are the evidence trail). false makes delivery a move, which is what stops generated_images growing ~2 MB per image forever.",
+  "keepSourceImages": false,
+  "_keepSourceImages_note": "Keep codex's own copy under CODEX_HOME/generated_images after delivery. false makes delivery a move, which is what stops generated_images growing ~2 MB per image forever. The sources were kept only as the evidence trail for the cross-assignment investigation; that validation has passed, so they are no longer needed. Set true to keep them for a fresh investigation.",
 
   "output": {
     "_note": "How the finished render reaches out_path. Codex always emits PNG; this is a post-render step. The bytes at out_path ALWAYS match its extension.",

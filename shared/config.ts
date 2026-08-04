@@ -86,9 +86,9 @@ export interface Config {
   maxConcurrentRenders: number;
   /**
    * Keep codex's own copy of the render under CODEX_HOME/generated_images after delivery.
-   * True while the cross-assignment investigation is open: the source files are the only trail
-   * that makes a mis-delivery diagnosable at all. False makes delivery a move, which is what
-   * stops generated_images growing ~2 MB per image forever.
+   * Now false: delivery is a move, which is what stops generated_images growing ~2 MB per
+   * image forever. It was true only while the cross-assignment investigation needed the
+   * source files as an evidence trail; that investigation is closed.
    */
   keepSourceImages: boolean;
   output: OutputConfig;
@@ -148,7 +148,7 @@ function parseConfig(raw: unknown): Config {
     model: optStr(r, "model"),
     thinking: optStr(r, "thinking"),
     maxConcurrentRenders: clampInt(num(r, "maxConcurrentRenders", 20), 1, 200),
-    keepSourceImages: bool(r, "keepSourceImages", true),
+    keepSourceImages: bool(r, "keepSourceImages", false),
     output: {
       format: outputFormat(output),
       quality: clampInt(num(output, "quality", 80), 1, 100),
