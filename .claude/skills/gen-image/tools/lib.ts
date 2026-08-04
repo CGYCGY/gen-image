@@ -99,6 +99,8 @@ export interface ImageCfg {
   /** pi model + thinking the spoke runs on (passed to the spawned pi). */
   model?: string;
   thinking?: string;
+  /** The backend's per-render SIGKILL ceiling; the driver's turn budget must sit ABOVE it. */
+  codexTimeoutMs: number;
 }
 
 /** Read pi-image's own config.json for stateDir + model/thinking. */
@@ -113,10 +115,14 @@ export function loadImageCfg(imageDir: string): ImageCfg {
     }
   }
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+  const codex = (typeof raw.codex === "object" && raw.codex !== null ? raw.codex : {}) as Record<string, unknown>;
+  const codexTimeoutMs =
+    typeof codex.timeoutMs === "number" && Number.isFinite(codex.timeoutMs) ? codex.timeoutMs : 900_000;
   return {
     stateDir: expandTilde(str(raw.stateDir) ?? "~/.pi-image"),
     model: str(raw.model),
     thinking: str(raw.thinking),
+    codexTimeoutMs,
   };
 }
 

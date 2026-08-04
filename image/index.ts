@@ -119,7 +119,12 @@ export default function imageExtension(pi: ExtensionAPI) {
           customInstructions:
             "The previous image request is complete and unrelated to the next. Discard its " +
             "prompt, paths, and result. Summarize to a single line: 'ready for next image'.",
-          onError: (e) => log.warn("compaction failed", { err: e.message }),
+          // "Nothing to compact" is the normal outcome for a short-lived one-shot session,
+          // not a failure — logging it as WARN buries real warnings in noise.
+          onError: (e) =>
+            /nothing to compact/i.test(e.message)
+              ? log.debug("compaction skipped", { err: e.message })
+              : log.warn("compaction failed", { err: e.message }),
         });
       }
     } catch (err) {

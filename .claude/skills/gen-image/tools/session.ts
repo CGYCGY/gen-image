@@ -61,9 +61,19 @@ import {
   takeLines,
 } from "./lib.ts";
 
-// An image turn is spoke boot + codex exec (image gen + model reasoning). Bound it generously;
-// overridable for slow networks / fast smoke tests.
-const TURN_BUDGET_MS = Number(process.env.PI_IMAGE_TURN_TIMEOUT_MS) || 8 * 60_000;
+// An image turn is spoke boot + codex exec + however long the run QUEUES — render slots are a
+// machine-wide ceiling and the spoke model itself queues under wide fan-out. Queued calls must
+// complete, not fail, so the budget derives from the render's own 900 s SIGKILL ceiling plus
+// queue/boot headroom rather than sitting below it (a flat 8 min budget dropped 13 of 30
+// legitimately-queued calls in validation). Overridable for fast smoke tests.
+function defaultTurnBudgetMs(): number {
+  try {
+    return loadImageCfg(resolveImageDir()).codexTimeoutMs + 10 * 60_000;
+  } catch {
+    return 25 * 60_000;
+  }
+}
+const TURN_BUDGET_MS = Number(process.env.PI_IMAGE_TURN_TIMEOUT_MS) || defaultTurnBudgetMs();
 const UP_READY_TIMEOUT_MS = Number(process.env.PI_IMAGE_READY_TIMEOUT_MS) || 60_000;
 
 type Out =
