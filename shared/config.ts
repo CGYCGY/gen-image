@@ -41,7 +41,12 @@ export interface CodexConfig {
   sandbox: string;
   /** Enable network for a workspace-write run (the built-in tool reaches Codex's backend). */
   network: boolean;
-  /** Hard cap for a single codex exec (image gen + model reasoning). */
+  /**
+   * Hard cap for a single codex exec (image gen + model reasoning). A backstop against a hung
+   * codex, NOT an operating limit — generates land at 1-2 min, but an edit was killed mid-render
+   * at the previous 5 min ceiling. Concurrent renders also queue provider-side, so a cap that is
+   * comfortable at N=1 can false-trip under a full parallel batch and look like a render bug.
+   */
   timeoutMs: number;
 }
 
@@ -98,7 +103,7 @@ function parseConfig(raw: unknown): Config {
       home: expandTilde(str(codex, "home", join(homedir(), ".codex"))),
       sandbox: str(codex, "sandbox", "workspace-write"),
       network: bool(codex, "network", true),
-      timeoutMs: num(codex, "timeoutMs", 300_000),
+      timeoutMs: num(codex, "timeoutMs", 900_000),
     },
   };
 }

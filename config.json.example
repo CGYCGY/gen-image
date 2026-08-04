@@ -16,6 +16,7 @@
     "home": "~/.codex",
     "sandbox": "workspace-write",
     "network": true,
-    "timeoutMs": 300000
+    "timeoutMs": 900000,
+    "_timeoutMs_note": "Backstop against a hung codex, NOT an operating limit — set it well above the slowest legitimate run. Generates land at 1-2 min, but an edit was killed mid-render at the old 300000 ceiling."
   }
 }
