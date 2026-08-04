@@ -2,10 +2,11 @@
  * shared/config.ts — load and parse config.json (pi-image's settings).
  *
  * Unlike a deploy manager, pi-image holds NO cloud creds: image generation runs through
- * the local `codex` CLI on the Codex/ChatGPT subscription. Config is just the spoke model,
- * the state dir, and how to drive codex. Every field has a default, so a missing config.json
- * still yields a working extension (the RPC driver, however, needs model/thinking to pin the
- * spoke model — so config.json should exist for real runs).
+ * the local `codex` CLI on the Codex/ChatGPT subscription. Config covers the spoke model,
+ * the state dir, how to drive codex, output delivery, and the render ceiling. Every field
+ * has a default, so a missing config.json still yields a working extension (the RPC driver,
+ * however, needs model/thinking to pin the spoke model — so config.json should exist for
+ * real runs).
  *
  * Uses only node: built-ins, no pi runtime dependency.
  */
@@ -86,9 +87,9 @@ export interface Config {
   maxConcurrentRenders: number;
   /**
    * Keep codex's own copy of the render under CODEX_HOME/generated_images after delivery.
-   * Now false: delivery is a move, which is what stops generated_images growing ~2 MB per
-   * image forever. It was true only while the cross-assignment investigation needed the
-   * source files as an evidence trail; that investigation is closed.
+   * False by default: delivery is a move, which is what stops generated_images growing
+   * ~2 MB per image forever. Set true to keep the sources as an evidence trail when
+   * investigating a suspected mis-delivery.
    */
   keepSourceImages: boolean;
   output: OutputConfig;
