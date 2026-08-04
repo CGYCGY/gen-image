@@ -26,6 +26,6 @@
     "skipLibCheck": true,
     "types": ["node", "bun"]
   },
-  "include": ["shared/**/*.ts", "image/**/*.ts", "test/**/*.ts"],
+  "include": ["shared/**/*.ts", "image/**/*.ts", "test/**/*.ts", ".claude/skills/gen-image/tools/*.ts"],
   "exclude": ["node_modules"]
 }

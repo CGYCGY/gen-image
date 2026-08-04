@@ -14,6 +14,9 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 
 ## Instructions
 
+- STYLES: if USER_INPUT names a style — `<name>:` prefix, "in <name> style", "as a <name>" — pass it as `--style <name>` on `generate`/`send`. The flag is REPEATABLE and ORDER IS PRECEDENCE: when two styles set the same property (orientation, text policy), the LAST one wins. So pass the names in the ORDER THE USER SAID THEM — never reorder, dedupe, or drop one. Do NOT read any style file or paste style text into the request: the driver reads the files itself, and what reaches the model is then exactly what is on disk.
+- An unknown style name FAILS LOUDLY with the full available set, so just pass the name the user used — you never need to look up the vocabulary before calling. Relay that list to the user and retry with a real name. Run the `styles` tool only when the user asks what is available.
+- Naming no style prepends nothing. Guidelines the user writes inline take precedence over a style; inline guidelines with no style named → send the request as-is.
 - Every request MUST name an ABSOLUTE out_path (and, for an edit, an absolute input_path). The spoke refuses relative paths and will ask — resolve the path from the user before sending.
 - The request is natural language; the spoke routes it to generate vs edit. For an edit, name the existing image's absolute path and the change to make.
 - A call is synchronous and may take 1–2 minutes per image — do not poll, time out, or re-run it.
@@ -27,14 +30,14 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 ## Tools
 
 ### generate
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" generate [--session <id>] "<request>"`
-- **Args:** `request (str, required)` — a natural-language image request naming the absolute out_path; `--session (str, optional)` — omit for a unique ephemeral session (parallel-safe)
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" generate [--session <id>] [--style <name>]... "<request>"`
+- **Args:** `request (str, required)` — a natural-language image request naming the absolute out_path; `--session (str, optional)` — omit for a unique ephemeral session (parallel-safe); `--style (str, optional, repeatable)` — style names in the user's order (last wins on a contested property)
 - **Does:** Summons an isolated spoke, sends one request, prints one JSON line; auto-ends the session on a final `result`. Safe to run many at once (each gets its own spoke).
 - **Triggers:** "generate an image", "create an image", "make a picture", "edit this image"
 
 ### send
-- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" send [--session <id>] "<message>"`
-- **Args:** `message (str, required)` — the next image request, or an answer to the spoke's question; `--session (str, optional)` — target session (default `main`; use the `session` from a prior output to continue that spoke)
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" send [--session <id>] [--style <name>]... "<message>"`
+- **Args:** `message (str, required)` — the next image request, or an answer to the spoke's question; `--session (str, optional)` — target session (default `main`; use the `session` from a prior output to continue that spoke); `--style (str, optional, repeatable)` — style names in the user's order (last wins on a contested property)
 - **Does:** Sends one prompt to the LIVE session and prints its next JSON line. Use after `up`, or after a `kind:"reply"`.
 - **Triggers:** "next image", "answer the spoke", "another one"
 
@@ -50,6 +53,12 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - **Does:** Ends that spoke session and frees its state. Idempotent — always safe to call at the end.
 - **Triggers:** "finished generating", "close the image session"
 
+### styles
+- **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" styles`
+- **Args:** none
+- **Does:** Prints the available style names, as `looks` (medium/palette/mark-making) and `forms` (artifact kind/layout/text policy). Any name from either list is valid for `--style`; the two can be combined.
+- **Triggers:** "what styles are available", "list the styles", "which looks can I use"
+
 ### clean
 - **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" clean`
 - **Args:** none
@@ -61,6 +70,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 ### Phase 1: Resolve the request
 1. From USER_INPUT build a single natural-language request naming an ABSOLUTE out_path (and input_path for an edit).
 2. If no absolute path is given, ask the user for one before sending.
+3. If the user named any style, add one `--style <name>` per name, in the order they said them.
 
 ### Phase 2: Drive the spoke
 1. One image → run the `generate` tool. Several independent images → PARALLEL fan-out: one run_in_background `generate` Bash call per image (see Cookbook). Several interactive/sequential images → run `up`, then `send` per image, then `down`.
@@ -79,6 +89,11 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 - **THEN:** read its `text` (usually it needs an absolute out_path or input_path); resolve it and answer with the `send` tool, passing `--session <the session from that output line>` so the answer reaches the SAME spoke. Repeat until `kind:"result"`.
 - **EXAMPLES:** "needs an absolute out_path", "which file should I edit?"
 
+### Unknown style name
+- **IF:** a tool prints `kind:"error"` with reason `unknown_style`
+- **THEN:** the `detail` lists every available look and form. Nothing was generated and no spoke was started, so retrying is free: pick the closest name (or ask the user which they meant) and re-run the same command with the corrected `--style`.
+- **EXAMPLES:** "unknown style \"neon-glow\"", "the user invented a style name"
+
 ### Spoke won't start / stuck
 - **IF:** a tool prints `kind:"error"` with reason `spawn_failed` / `ready_timeout` / `spoke_down` / `timeout`
 - **THEN:** run the `clean` tool, surface the `detail` (point at `<stateDir>/logs/image.log`), and retry once.
@@ -96,7 +111,7 @@ Hand an image request to the gated pi-image spoke over pi RPC: send a natural-la
 
 ## Supporting Files
 
-- `tools/session.ts` - RPC driver (run with bun): `generate` / `up` / `send` / `down` / `clean`
+- `tools/session.ts` - RPC driver (run with bun): `generate` / `up` / `send` / `down` / `clean` / `styles`
 - `tools/lib.ts` - spoke locator, pi spawn argv, JSONL framing, notify-marker contract
 
 ## Report

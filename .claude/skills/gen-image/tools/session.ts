@@ -14,12 +14,17 @@
 // `generate` (no explicit session) uses an ephemeral pid-unique session — concurrent one-shot
 // generates (e.g. N parallel invocations from one caller) are isolated by construction.
 //
+// Styles: `--style <name>` is repeatable on generate/send and its ORDER IS PRECEDENCE. The
+// names are resolved here, driver-side, against the checkout's styles/ — the spoke takes prose,
+// not parameters, so the merged text has to be prepended before the request is sent.
+//
 // Subcommands:
 //   generate "<NL request>"  one-shot: bring up if needed, send once; auto-down on a result
 //   up                       start the persistent session (for many images / back-and-forth)
 //   send "<message>"         send one request to the live session (next image / answer a question)
 //   down                     stop the session
 //   clean                    kill ALL stale spokes + clear every session's state
+//   styles                   print the available looks and forms
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -35,8 +40,11 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { join } from "node:path";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
 
+import type * as StylesModule from "../../../../shared/styles.ts";
 import {
   expandTilde,
   type ImageCfg,
@@ -59,7 +67,7 @@ const TURN_BUDGET_MS = Number(process.env.PI_IMAGE_TURN_TIMEOUT_MS) || 8 * 60_00
 const UP_READY_TIMEOUT_MS = Number(process.env.PI_IMAGE_READY_TIMEOUT_MS) || 60_000;
 
 type Out =
-  | { kind: "ok"; detail: string }
+  | { kind: "ok"; detail: string; looks?: string[]; forms?: string[] }
   | { kind: "result"; result: Record<string, unknown>; text?: string }
   | { kind: "reply"; text: string }
   | { kind: "error"; reason: string; detail: string };
@@ -256,16 +264,56 @@ function sendOnce(p: Paths, message: string): Out {
   return { kind: "error", reason: "timeout", detail: `no result within ${Math.round(TURN_BUDGET_MS / 60_000)} min.` };
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+/**
+ * Import the resolver from the RESOLVED checkout rather than by relative path: this skill can
+ * be copied out of pi-image and pointed back with PI_IMAGE_DIR, where a relative import would
+ * fail at parse time and break every subcommand, not just the styled ones.
+ */
+async function loadStyles(imageDir: string): Promise<typeof StylesModule> {
+  const url = pathToFileURL(join(imageDir, "shared", "styles.ts")).href;
+  return (await import(url)) as typeof StylesModule;
+}
+
+/** Merged style text to prepend, or "". Resolves BEFORE any spoke is spawned, so a bad name costs nothing. */
+async function stylePrefix(imageDir: string, names: string[]): Promise<string> {
+  if (names.length === 0) return "";
+  const styles = await loadStyles(imageDir);
+  let res: StylesModule.Resolution;
+  try {
+    res = styles.resolveStyles(names);
+  } catch (err) {
+    const detail = (err as Error).message;
+    styles.logResolutionFailure(names, detail);
+    emit({ kind: "error", reason: detail.startsWith("unknown style") ? "unknown_style" : "bad_style", detail });
+  }
+  styles.logResolution(res);
+  return res.text ? `${res.text}\n\n` : "";
+}
+
 // ── CLI subcommands ──────────────────────────────────────────────────────────
 
-function cmdGenerate(message: string, ephemeral: boolean): never {
+async function cmdStyles(): Promise<never> {
+  const styles = await loadStyles(resolveImageDir());
+  const { looks, forms } = styles.listStyles();
+  emit({
+    kind: "ok",
+    detail: `${looks.length} looks, ${forms.length} forms — pass any of them with --style <name>, repeatable, last wins.`,
+    looks,
+    forms,
+  });
+}
+
+async function cmdGenerate(message: string, ephemeral: boolean, styleNames: string[]): Promise<never> {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "generate requires a natural-language image request." });
   const imageDir = resolveImageDir();
+  const prefix = await stylePrefix(imageDir, styleNames);
   const cfg = loadImageCfg(imageDir);
   const p = paths(cfg.stateDir, SESSION);
   const up = bringUp(imageDir, cfg, p, SESSION);
   if (up.err) emit(up.err);
-  const out = sendOnce(p, message);
+  const out = sendOnce(p, prefix + message);
   // Auto-down when the image CONCLUDED in one shot; leave it up on a question so the caller
   // can answer with `send --session <this session>` (and `down` when finished). An ephemeral
   // session is also reaped on error — nothing will ever come back for it.
@@ -282,12 +330,13 @@ function cmdUp(): never {
   emit({ kind: "ok", detail: up.reused ? "spoke already up" : "spoke up and ready" });
 }
 
-function cmdSend(message: string): never {
+async function cmdSend(message: string, styleNames: string[]): Promise<never> {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "send requires a message." });
   const imageDir = resolveImageDir();
+  const prefix = await stylePrefix(imageDir, styleNames);
   const cfg = loadImageCfg(imageDir);
   const p = paths(cfg.stateDir, SESSION);
-  emit(sendOnce(p, message)); // never auto-downs — the caller controls the session lifecycle
+  emit(sendOnce(p, prefix + message)); // never auto-downs — the caller controls the session lifecycle
 }
 
 function cmdDown(): never {
@@ -483,31 +532,46 @@ function runSpoke(): never {
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 const sub = process.argv[2];
-// Pull --session/-s out of the tail; everything left joins into the message.
+// Pull the flags out of the tail; everything left joins into the message. --style is
+// repeatable and its order is preserved verbatim — that order is the caller's precedence.
 const rest = process.argv.slice(3);
 let sessionFlag: string | undefined;
+const styleNames: string[] = [];
+const words: string[] = [];
 for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === "--session" || rest[i] === "-s") {
-    sessionFlag = rest[i + 1];
-    rest.splice(i, 2);
-    break;
+  const arg = rest[i]!;
+  const eq = arg.indexOf("=");
+  const flag = eq > 0 ? arg.slice(0, eq) : arg;
+  const inline = eq > 0 ? arg.slice(eq + 1) : undefined;
+  if (flag === "--session" || flag === "-s") {
+    sessionFlag = inline ?? rest[++i];
+  } else if (flag === "--style") {
+    const name = inline ?? rest[++i];
+    if (!name) emit({ kind: "error", reason: "bad_args", detail: "--style requires a name." });
+    styleNames.push(name);
+  } else {
+    words.push(arg);
   }
 }
-const message = rest.join(" ").trim();
+const message = words.join(" ").trim();
+
 try {
   // A bare one-shot generate gets a pid-unique ephemeral session, so N concurrent generates
   // (fanned out in parallel by one caller) can never collide on a shared spoke. The __spoke child
   // inherits its session via PI_IMAGE_SESSION, which resolveSession picks up.
   const ephemeral = sub === "generate" && !sessionFlag && !process.env.PI_IMAGE_SESSION?.trim();
   SESSION = ephemeral ? `gen-${process.pid}` : resolveSession(sessionFlag);
-  if (sub === "generate") cmdGenerate(message, ephemeral);
+  if (sub === "generate") await cmdGenerate(message, ephemeral, styleNames);
   else if (sub === "up") cmdUp();
-  else if (sub === "send") cmdSend(message);
+  else if (sub === "send") await cmdSend(message, styleNames);
   else if (sub === "down") cmdDown();
   else if (sub === "clean") cmdClean();
+  else if (sub === "styles") await cmdStyles();
   else if (sub === "__spoke") runSpoke();
   else {
-    process.stdout.write("usage: session.ts <generate|up|send|down|clean> [--session <id>] [message]\n");
+    process.stdout.write(
+      "usage: session.ts <generate|up|send|down|clean|styles> [--session <id>] [--style <name>]... [message]\n",
+    );
     process.exit(2);
   }
 } catch (err) {
