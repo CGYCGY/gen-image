@@ -61,19 +61,25 @@ import {
   takeLines,
 } from "./lib.ts";
 
-// An image turn is spoke boot + codex exec + however long the run QUEUES — render slots are a
-// machine-wide ceiling and the spoke model itself queues under wide fan-out. Queued calls must
-// complete, not fail, so the budget must sit ABOVE the render's own SIGKILL ceiling
-// (`codex.timeoutMs`) rather than below it — a flat 8 min budget dropped 13 of 30
-// legitimately-queued calls in validation. Overridable for fast smoke tests.
-function defaultTurnBudgetMs(): number {
+// The longest legitimate GAP between two events in a turn: one render's own SIGKILL ceiling
+// (`codex.timeoutMs`) plus queue/boot headroom. It must sit ABOVE that ceiling, never below — a
+// flat 8 min budget dropped 13 of 30 legitimately-queued calls in validation.
+//
+// This is a gap, NOT a total. A batch renders concurrently and its images conclude one by one, so
+// capping the whole turn would make a ten-image batch share one image's allowance and throw away
+// nine finished renders because the tenth queued. Overridable for fast smoke tests.
+function defaultStallMs(): number {
   try {
     return loadImageCfg(resolveImageDir()).codexTimeoutMs + 10 * 60_000;
   } catch {
     return 25 * 60_000;
   }
 }
-const TURN_BUDGET_MS = Number(process.env.PI_IMAGE_TURN_TIMEOUT_MS) || defaultTurnBudgetMs();
+const PROGRESS_STALL_MS = Number(process.env.PI_IMAGE_TURN_TIMEOUT_MS) || defaultStallMs();
+// Nothing is rendering yet before the first START, so this only has to cover boot plus the spoke
+// model composing its calls — seconds, even for a batch. Kept generous anyway: the cost of firing
+// early is a wasted re-run, and a batch of many images takes longer to compose than one.
+const FIRST_CALL_MS = Number(process.env.PI_IMAGE_FIRST_CALL_MS) || 180_000;
 const UP_READY_TIMEOUT_MS = Number(process.env.PI_IMAGE_READY_TIMEOUT_MS) || 60_000;
 
 type Out =
@@ -222,18 +228,33 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths, session: string): B
   }
 }
 
-/** Send one prompt to the live session and block for its tagged result/reply/error. */
-function sendOnce(p: Paths, message: string): Out {
+/**
+ * Send one prompt to the live session and block for its tagged result/reply/error.
+ *
+ * Two deadlines, both PER IMAGE rather than per turn — a batch of ten must not share one budget,
+ * or a slow tenth image throws away the nine that already landed:
+ *
+ *  - FIRST_CALL_MS from sending until the first START. Nothing rendering yet, so this is short.
+ *    Blowing it means the spoke model never called a verb — the failure that otherwise burns the
+ *    whole budget in silence (observed: 25 min, no transcript, no verb).
+ *  - PROGRESS_STALL_MS between any two events after that. Every START and every RESULT resets it,
+ *    so a batch may run for an hour provided something keeps landing, while one wedged render
+ *    still gets caught within one render's ceiling plus queue headroom.
+ */
+function sendOnce(p: Paths, message: string, expect: string[] = []): Out {
   if (!sessionLive(p)) {
     return { kind: "error", reason: "no_session", detail: "no live spoke session; run `up` (or `generate`) first." };
   }
   const id = `req-${process.pid}-${Date.now()}`;
   let offset = existsSync(p.out) ? statSync(p.out).size : 0;
-  appendFileSync(p.fifo, `${JSON.stringify({ id, message })}\n`);
+  appendFileSync(p.fifo, `${JSON.stringify({ id, message, expect })}\n`);
 
-  const deadline = Date.now() + TURN_BUDGET_MS;
+  let sawStart = false;
+  let lastEventAt = Date.now();
+  const stalled = (): boolean =>
+    Date.now() - lastEventAt > (sawStart ? PROGRESS_STALL_MS : FIRST_CALL_MS);
   let acc = "";
-  while (Date.now() < deadline) {
+  while (!stalled()) {
     const st = readState(p);
     if (st && !pidAlive(st.pid)) {
       return { kind: "error", reason: "spoke_down", detail: "spoke exited mid-request; see <stateDir>/logs/image.log." };
@@ -263,6 +284,11 @@ function sendOnce(p: Paths, message: string): Out {
           continue;
         }
         if (msg.id !== id) continue; // a stale/aborted prior turn — ignore
+        if (msg.kind === "progress") {
+          sawStart = true;
+          lastEventAt = Date.now();
+          continue;
+        }
         if (msg.kind === "results") return { kind: "results", results: msg.results ?? [], text: msg.text };
         if (msg.kind === "reply") return { kind: "reply", text: msg.text ?? "" };
         if (msg.kind === "error") return { kind: "error", reason: msg.reason ?? "error", detail: msg.detail ?? "" };
@@ -271,7 +297,19 @@ function sendOnce(p: Paths, message: string): Out {
     sleep(0.5);
   }
   appendFileSync(p.fifo, `${JSON.stringify({ control: "abort" })}\n`);
-  return { kind: "error", reason: "timeout", detail: `no result within ${Math.round(TURN_BUDGET_MS / 60_000)} min.` };
+  // Distinct reasons because they call for different handling: no_verb_call is worth re-running
+  // (a fresh spoke usually just works), a mid-render stall is not.
+  return sawStart
+    ? {
+        kind: "error",
+        reason: "timeout",
+        detail: `no image concluded for ${Math.round(PROGRESS_STALL_MS / 60_000)} min; the render is wedged.`,
+      }
+    : {
+        kind: "error",
+        reason: "no_verb_call",
+        detail: `the spoke called no verb within ${Math.round(FIRST_CALL_MS / 1000)}s — it never started rendering.`,
+      };
 }
 
 /**
@@ -311,15 +349,31 @@ async function cmdStyles(): Promise<never> {
   });
 }
 
-async function cmdGenerate(message: string, ephemeral: boolean, styleNames: string[]): Promise<never> {
+async function cmdGenerate(
+  message: string,
+  ephemeral: boolean,
+  styleNames: string[],
+  expect: string[],
+): Promise<never> {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "generate requires a natural-language image request." });
   const imageDir = resolveImageDir();
   const prefix = await stylePrefix(imageDir, styleNames);
   const cfg = loadImageCfg(imageDir);
   const p = paths(cfg.stateDir, SESSION);
-  const up = bringUp(imageDir, cfg, p, SESSION);
+  let up = bringUp(imageDir, cfg, p, SESSION);
   if (up.err) emit(up.err);
-  const out = sendOnce(p, prefix + message);
+  let out = sendOnce(p, prefix + message, expect);
+  // A spoke that never called a verb has produced nothing to salvage and will not start now, so
+  // re-run the whole turn on a FRESH spoke — the same thing a caller does by hand, which is what
+  // rescued the one stall we caught (the retry succeeded in under two minutes). Only once, and
+  // only for this reason: a wedged RENDER is retried inside the verb instead, and re-running it
+  // out here would pay for the work twice.
+  if (out.kind === "error" && out.reason === "no_verb_call") {
+    tearDown(p);
+    up = bringUp(imageDir, cfg, p, SESSION);
+    if (up.err) emit(up.err);
+    out = sendOnce(p, prefix + message, expect);
+  }
   // Auto-down when the image CONCLUDED in one shot; leave it up on a question so the caller
   // can answer with `send --session <this session>` (and `down` when finished). An ephemeral
   // session is also reaped on error — nothing will ever come back for it.
@@ -336,13 +390,15 @@ function cmdUp(): never {
   emit({ kind: "ok", detail: up.reused ? "spoke already up" : "spoke up and ready" });
 }
 
-async function cmdSend(message: string, styleNames: string[]): Promise<never> {
+async function cmdSend(message: string, styleNames: string[], expect: string[]): Promise<never> {
   if (!message) emit({ kind: "error", reason: "bad_args", detail: "send requires a message." });
   const imageDir = resolveImageDir();
   const prefix = await stylePrefix(imageDir, styleNames);
   const cfg = loadImageCfg(imageDir);
   const p = paths(cfg.stateDir, SESSION);
-  emit(sendOnce(p, prefix + message)); // never auto-downs — the caller controls the session lifecycle
+  // No turn retry here: a warm session belongs to the caller, and silently re-sending could
+  // duplicate work it already has. The `no_verb_call` reason comes back for the caller to act on.
+  emit(sendOnce(p, prefix + message, expect)); // never auto-downs — the caller owns the lifecycle
 }
 
 function cmdDown(): never {
@@ -437,6 +493,45 @@ function driverClientPids(skip: Set<number>): number[] {
     }
   }
   return found;
+}
+
+/**
+ * One entry per image the caller asked for — the guarantee that N images requested come back as N
+ * entries, however the turn went. Three sources, in order of authority:
+ *
+ *  1. Concluded results. Whatever the verbs actually reported.
+ *  2. A verb that STARTed and never concluded — the spoke or its pi died mid-render. Code knows
+ *     the path because the verb announced it before rendering.
+ *  3. A path the caller expected that no verb ever touched. This is the one nothing inside the
+ *     spoke can see: turning prose into verb calls is the MODEL's step, so an image it silently
+ *     dropped leaves no trace in the extension. Only the caller's own list catches it.
+ *
+ * A result covers an expected path under either name, because delivery may rewrite the extension
+ * and then `out_path` is the delivered file while `requested_path` is what was asked for.
+ */
+function reconcile(cur: { results: Record<string, unknown>[]; starts: string[]; expect: string[] }): Record<string, unknown>[] {
+  const out = [...cur.results];
+  const covers = (path: string): boolean =>
+    out.some((r) => r.out_path === path || r.requested_path === path);
+  for (const started of cur.starts) {
+    if (covers(started)) continue;
+    out.push({
+      status: "failed",
+      op: "generate",
+      out_path: started,
+      error: "the verb started rendering but never reported a result (the spoke died mid-render).",
+    });
+  }
+  for (const wanted of cur.expect) {
+    if (covers(wanted)) continue;
+    out.push({
+      status: "failed",
+      op: "generate",
+      out_path: wanted,
+      error: "the spoke issued no verb call for this path, so nothing was rendered for it.",
+    });
+  }
+  return out;
 }
 
 /** Session ids under the sessions root; [] before any session has existed. */
@@ -561,12 +656,31 @@ function runSpoke(): never {
 
   // results accumulates because ONE turn may conclude MANY images: pi executes sibling tool
   // calls concurrently, so a multi-image request emits one RESULT notify per verb call.
-  let current: { id: string; results: Record<string, unknown>[] } | null = null;
+  // starts records the out_paths verbs COMMITTED to, and expect the paths the caller asked for;
+  // together they are what makes the reply hold one entry per requested image (see reconcile).
+  let current: { id: string; results: Record<string, unknown>[]; starts: string[]; expect: string[] } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const clearCurrent = (): void => {
     if (timer) clearTimeout(timer);
     timer = null;
     current = null;
+  };
+
+  /**
+   * Backstop for a turn pi never ends. Re-armed on every START and RESULT so it measures the GAP
+   * between events, not the turn total — a ten-image batch is not wedged just because it is long.
+   * Deliberately one minute slower than the client's own watchdog, so the client aborts first and
+   * the caller gets its reconciled entries instead of this bare error.
+   */
+  const armTimer = (reqId: string): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      send({ type: "abort" });
+      if (current?.id === reqId) {
+        append({ id: reqId, kind: "error", reason: "timeout", detail: "spoke produced no turn end in time." });
+      }
+      clearCurrent();
+    }, PROGRESS_STALL_MS + 60_000);
   };
 
   const shutdown = (): void => {
@@ -621,7 +735,20 @@ function runSpoke(): never {
       return;
     }
     if (note.result !== undefined) {
-      if (current) current.results.push(note.result as Record<string, unknown>);
+      if (current) {
+        current.results.push(note.result as Record<string, unknown>);
+        armTimer(current.id);
+      }
+      return;
+    }
+    if (note.startPath) {
+      if (current) {
+        current.starts.push(note.startPath);
+        armTimer(current.id);
+        // Relayed to the waiting client immediately: it is the client's proof the spoke is
+        // actually working, and its heartbeat for the no-progress watchdog.
+        append({ id: current.id, kind: "progress", event: "start", out_path: note.startPath });
+      }
       return;
     }
     if (msg.type === "agent_end") {
@@ -635,7 +762,7 @@ function runSpoke(): never {
       // the assistant text is a question/status to relay back to the caller. One image keeps
       // emitting `result` verbatim — callers branch on that kind, and a batch must not change
       // what a single generate looks like.
-      const r = current.results;
+      const r = reconcile(current);
       if (r.length > 0) append({ id: current.id, kind: "results", results: r, text });
       else append({ id: current.id, kind: "reply", text });
       clearCurrent();
@@ -651,7 +778,7 @@ function runSpoke(): never {
       for await (const raw of rl) {
         const line = raw.trim();
         if (!line) continue;
-        let req: { id?: string; message?: string; control?: string };
+        let req: { id?: string; message?: string; control?: string; expect?: string[] };
         try {
           req = JSON.parse(line);
         } catch {
@@ -666,15 +793,8 @@ function runSpoke(): never {
           continue;
         }
         if (req.id && typeof req.message === "string") {
-          current = { id: req.id, results: [] };
-          const reqId = req.id;
-          timer = setTimeout(() => {
-            send({ type: "abort" });
-            if (current?.id === reqId) {
-              append({ id: reqId, kind: "error", reason: "timeout", detail: "spoke produced no turn end in time." });
-            }
-            clearCurrent();
-          }, TURN_BUDGET_MS + 60_000);
+          current = { id: req.id, results: [], starts: [], expect: req.expect ?? [] };
+          armTimer(req.id);
           send({ type: "prompt", message: req.message, id: req.id });
         }
       }
@@ -691,6 +811,7 @@ const sub = process.argv[2];
 const rest = process.argv.slice(3);
 let sessionFlag: string | undefined;
 const styleNames: string[] = [];
+const expectPaths: string[] = [];
 const words: string[] = [];
 for (let i = 0; i < rest.length; i++) {
   const arg = rest[i]!;
@@ -703,6 +824,10 @@ for (let i = 0; i < rest.length; i++) {
     const name = inline ?? rest[++i];
     if (!name) emit({ kind: "error", reason: "bad_args", detail: "--style requires a name." });
     styleNames.push(name);
+  } else if (flag === "--expect") {
+    const path = inline ?? rest[++i];
+    if (!path) emit({ kind: "error", reason: "bad_args", detail: "--expect requires an absolute out_path." });
+    expectPaths.push(path);
   } else {
     words.push(arg);
   }
@@ -715,9 +840,9 @@ try {
   // inherits its session via PI_IMAGE_SESSION, which resolveSession picks up.
   const ephemeral = sub === "generate" && !sessionFlag && !process.env.PI_IMAGE_SESSION?.trim();
   SESSION = ephemeral ? `gen-${process.pid}` : resolveSession(sessionFlag);
-  if (sub === "generate") await cmdGenerate(message, ephemeral, styleNames);
+  if (sub === "generate") await cmdGenerate(message, ephemeral, styleNames, expectPaths);
   else if (sub === "up") cmdUp();
-  else if (sub === "send") await cmdSend(message, styleNames);
+  else if (sub === "send") await cmdSend(message, styleNames, expectPaths);
   else if (sub === "down") cmdDown();
   else if (sub === "clean") cmdClean();
   else if (sub === "styles") await cmdStyles();

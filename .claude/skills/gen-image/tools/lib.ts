@@ -13,8 +13,11 @@ const TOOLS_DIR = dirname(fileURLToPath(import.meta.url));
 export const SKILL_DIR = resolve(TOOLS_DIR, "..");
 
 // Notify markers the spoke emits on the RPC event stream (extension_ui_request /
-// method:"notify"). READY = session booted; RESULT = a code-derived ImageJobResult JSON.
+// method:"notify"). READY = session booted; START = a verb committed to an out_path and is about
+// to render; RESULT = a code-derived ImageJobResult JSON. START is what makes "the spoke never
+// called a verb" distinguishable from "still rendering" without waiting out the whole budget.
 export const READY_MARK = "PIIMAGE_READY";
+export const START_MARK = "PIIMAGE_START";
 export const RESULT_MARK = "PIIMAGE_RESULT";
 
 // pi process --name tag prefix; distinctive enough that pkill-by-tag targets spoke pis
@@ -180,11 +183,20 @@ export function piArgs(imageDir: string, cfg: ImageCfg, session: string): string
  * ctx.ui.notify as {type:"extension_ui_request", method:"notify", message}. READY/RESULT are
  * the spoke's two structured signals; everything else (plain assistant text) is a human reply.
  */
-export function parseNotify(msg: unknown): { ready?: boolean; result?: unknown } {
+export function parseNotify(msg: unknown): { ready?: boolean; result?: unknown; startPath?: string } {
   const m = msg as { type?: string; method?: string; message?: unknown };
   if (m?.type !== "extension_ui_request" || m?.method !== "notify") return {};
   const text = String(m.message ?? "");
   if (text.startsWith(READY_MARK)) return { ready: true };
+  if (text.startsWith(START_MARK)) {
+    try {
+      const { out_path } = JSON.parse(text.slice(START_MARK.length).trim()) as { out_path?: string };
+      if (out_path) return { startPath: out_path };
+    } catch {
+      /* a malformed START only costs the early-abort signal, never the run */
+    }
+    return {};
+  }
   if (text.startsWith(RESULT_MARK)) {
     const json = text.slice(RESULT_MARK.length).trim();
     try {

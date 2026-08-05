@@ -31,6 +31,7 @@ import sharp from "sharp";
 import type { OutputConfig } from "../../shared/config.ts";
 import { baseRules } from "../../shared/styles.ts";
 import { runCommand } from "../../shared/subprocess.ts";
+import { terminalError } from "../../shared/types.ts";
 
 import { claimSource } from "./claims.ts";
 import { acquireRenderSlot } from "./semaphore.ts";
@@ -337,7 +338,7 @@ async function runCodex(ctx: BackendCtx, args: string[], outPath: string, op: st
     // twice (or something else wrote there), and picking one would be a coin flip presented as a
     // fact — the same shape of mistake as the cross-session fallback that used to live here.
     if (candidates.length > 1) {
-      throw new Error(
+      throw terminalError(
         `codex session ${sessionId} holds ${candidates.length} images since the run started ` +
           `(${candidates.map((c) => basename(c)).join(", ")}); which one belongs to this request is ` +
           `ambiguous, so nothing was delivered.`,

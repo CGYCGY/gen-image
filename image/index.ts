@@ -15,7 +15,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { getModelConfig } from "../shared/config.ts";
 import { createLogger } from "../shared/log.ts";
-import { type ImageJobResult, READY_MARK, RESULT_MARK, type Role } from "../shared/types.ts";
+import { type ImageJobResult, READY_MARK, RESULT_MARK, type Role, START_MARK } from "../shared/types.ts";
 
 import { listBackends } from "./backends/index.ts";
 import { registerImageTools, VERB_NAMES } from "./tools.ts";
@@ -57,6 +57,19 @@ export default function imageExtension(pi: ExtensionAPI) {
     if (!c?.hasUI) return;
     const model = c.model?.id ?? "no-model";
     c.ui.setStatus("pi-image", `● image | ${model} | $${cumulativeCost.toFixed(3)}`);
+  };
+
+  /**
+   * Announce a render the moment a verb commits to it. The driver needs this BEFORE the render,
+   * not after: it is the only signal that separates "the spoke is working" from "the spoke never
+   * called a verb", and the latter otherwise costs the caller the whole turn budget to discover.
+   */
+  const emitStart = (ctx: ExtensionContext, outPath: string): void => {
+    try {
+      ctx.ui.notify(`${START_MARK} ${JSON.stringify({ out_path: outPath })}`, "info");
+    } catch {
+      /* best effort — a missed START only costs the driver its early-abort signal */
+    }
   };
 
   /** Emit the code-derived result on the RESULT notify channel for the driver to capture. */
@@ -139,6 +152,7 @@ export default function imageExtension(pi: ExtensionAPI) {
   registerImageTools(pi, {
     roleLog: log,
     concludeJob,
+    emitStart,
     setActiveCtx: (ctx) => {
       activeCtx = ctx;
     },

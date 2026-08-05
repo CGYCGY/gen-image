@@ -130,6 +130,20 @@ can come from a distribution rather than a judgement call. The driver's own turn
 same config value plus 10 min of queue/boot headroom rather than sitting below it, so a legitimately
 queued call is never cut off from the outside.
 
+A failed render is retried **in code**, `maxRetries` times (config, default 1), inside the verb. Not by
+the spoke: a model deciding when to call a verb again would conclude a second result for the same
+image, so N images could come back as N+k entries. Each attempt is a fresh `codex exec` with its own
+timeout, never a continuation — the failures worth retrying (a run we killed, a run that produced
+nothing) leave nothing to resume. Two failures never retry, however high `maxRetries` goes:
+
+- The claim-once collision (§3), and
+- the ambiguous multi-candidate session (§3).
+
+Those are safety verdicts, not flaky renders. A retry that happens to succeed mutes the alarm without
+fixing what tripped it, and cross-assignment is the one failure nothing downstream can catch. They are
+marked `terminalError` at the throw site so the verb can tell them apart. A result that took more than
+one attempt says so (`attempts`), because a backend failing half the time otherwise reads as healthy.
+
 ## 4. Delivering the file
 
 The codex agent is told to generate and stop, not to move anything, but correctness does not depend on
@@ -254,6 +268,10 @@ notify markers (`ctx.ui.notify` → `extension_ui_request`, `method: "notify"`) 
 
 - `PIIMAGE_READY` — emitted on `session_start`, so the driver can confirm the spoke actually booted
   before sending work.
+- `PIIMAGE_START <json>` — the `out_path` a verb has committed to, emitted BEFORE the render and only
+  once validation passed. It is what separates "the spoke is working" from "the spoke never called a
+  verb": without it the second costs the caller its whole budget to discover, silently (observed: 25
+  minutes, no transcript, no verb call). It is also the driver's per-image progress heartbeat.
 - `PIIMAGE_RESULT <json>` — the `ImageJobResult` (`status`, `op`, `backend?`, `model?`, `out_path?`,
   `format?`, `requested_path?`, `bytes?`, `warning?`, `error?`). `bytes` > 0 is the proof the file
   landed, and `format` always describes the bytes at `out_path`. One notify per verb call, so a turn
@@ -271,6 +289,13 @@ an array, one entry for one image and N for N:
 - Mixed `ok`/`failed` entries are normal, not a whole-turn failure.
 - Distinct from `PIIMAGE_RESULT` above: that stays one notify per verb call, and is what the driver
   accumulates into this array.
+
+The array holds one entry per image the caller asked for, reconciled from three sources in order of
+authority: concluded results; a `PIIMAGE_START` that never concluded (the spoke died mid-render, and
+code knows the path because the verb announced it); and a `--expect` path no verb ever touched. That
+last source is the only one that can catch an image the SPOKE MODEL silently dropped — turning prose
+into verb calls is the model's step, so an image it never calls leaves no trace inside the extension.
+Callers that skip `--expect` get the first two guarantees only, and a dropped image just vanishes.
 
 Callers must report the returned `out_path`, not the one they asked for. `requested_path` is present
 exactly when the configured delivery format rewrote the caller's path (§4), and an agent that reports its

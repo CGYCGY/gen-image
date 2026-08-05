@@ -15,6 +15,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { terminalError } from "../../shared/types.ts";
+
 /**
  * Claims older than this are pruned. Long enough that a claim outlives any plausible
  * investigation of a mis-delivery, short enough that the directory never becomes a scan cost.
@@ -84,7 +86,7 @@ export function claimSource(stateDir: string, source: string, meta: ClaimMeta): 
     writeFileSync(path, JSON.stringify(record), { encoding: "utf8", flag: "wx" });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    throw new Error(
+    throw terminalError(
       `codex source ${source} was already claimed by ${describe(path)} — two runs resolved to the ` +
         `same image, so delivering it here would silently hand this caller another run's render.`,
     );

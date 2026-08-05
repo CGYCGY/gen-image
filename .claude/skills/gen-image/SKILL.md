@@ -20,7 +20,9 @@ user-invocable: true
 - Every subcommand takes an optional `--session <id>`; each session is a fully isolated spoke (own state, own process). Default session is `main` — except a bare `generate`, which auto-picks a unique ephemeral session, so concurrent one-shot generates NEVER collide.
 - Every output line carries `session`. To follow up on a spoke (answer its question, send the next image), pass that id back via `--session`.
 - For several images, name them ALL in ONE request to ONE session — this is the default, not process fan-out. The spoke issues one verb call per image in a single turn and they render CONCURRENTLY on one spoke: 4 images landed in 78 s, the wall-clock of one.
-- `results` is in COMPLETION order, NOT request order. Match every entry by its `out_path`; never by position. Count them — fewer entries than images asked for means the spoke skipped some, so re-send only the missing paths.
+- ALWAYS pass one `--expect <absolute out_path>` per image you asked for. The driver then guarantees ONE entry per expected path: an image the spoke silently skipped comes back as a `failed` entry naming that path instead of vanishing from the array. Without `--expect` a dropped image is undetectable.
+- `results` is in COMPLETION order, NOT request order. Match every entry by its `out_path` — or by `requested_path` when present, which is the path YOU asked for when delivery rewrote the extension. Never match by position.
+- A failed entry may carry `attempts` — the render already failed and was retried IN CODE before being reported. Re-sending such a path is worth at most one more try; it is not a transient blip that will clear on its own.
 - Process fan-out (one run_in_background `generate` per image) is the FALLBACK: use it when images need separate sessions (their own back-and-forth), or when a single turn keeps dropping some. It costs one spoke + one pi per image instead of one for the whole batch. `run_in_background: true` is what parallelizes it; foreground fan-out silently degrades to N×2 min.
 - For several images built INTERACTIVELY (back-and-forth, or sequential edits on prior outputs), keep one spoke WARM instead: `up` once → `send` per image → `down` (one boot, many cheap images).
 - Never pass or guess a model — pi-image pins its models in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
@@ -86,6 +88,11 @@ user-invocable: true
 - **IF:** a tool prints `kind:"error"` with reason `unknown_style`
 - **THEN:** the `detail` lists every available look and form. Nothing was generated and no spoke was started, so retrying is free: pick the closest name (or ask the user which they meant) and re-run the same command with the corrected `--style`.
 - **EXAMPLES:** "unknown style \"neon-glow\"", "the user invented a style name"
+
+### Spoke never called a verb
+- **IF:** a tool prints `kind:"error"` with reason `no_verb_call`
+- **THEN:** the spoke booted and took the request but issued no verb, so nothing rendered and no quota was spent. `generate` already re-ran the whole turn once on a fresh spoke before reporting this, so a second immediate retry is unlikely to help — report it and check `<stateDir>/logs/image.log`. After `send`, the session is still up: retry with `send --session <that session>`, or `down` and start clean.
+- **EXAMPLES:** "the spoke called no verb within 180s"
 
 ### Spoke won't start / stuck
 - **IF:** a tool prints `kind:"error"` with reason `spawn_failed` / `ready_timeout` / `spoke_down` / `timeout`

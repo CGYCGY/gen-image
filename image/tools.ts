@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { loadConfig } from "../shared/config.ts";
 import type { Logger } from "../shared/log.ts";
 import { validateInputPath, validateOutPath } from "../shared/sandbox.ts";
-import type { ImageJobResult } from "../shared/types.ts";
+import { type ImageJobResult, isTerminal } from "../shared/types.ts";
 
 import { DEFAULT_BACKEND_ID, resolveBackend } from "./backends/index.ts";
 import type { BackendCtx, BackendResult } from "./backends/types.ts";
@@ -22,11 +22,61 @@ export interface ImageToolDeps {
   roleLog: Logger;
   /** Emit the code-derived ImageJobResult to the caller on the RESULT notify channel. */
   concludeJob: (ctx: ExtensionContext, result: ImageJobResult) => void;
+  /** Announce, before rendering, the out_path this call has committed to producing. */
+  emitStart: (ctx: ExtensionContext, outPath: string) => void;
   setActiveCtx: (ctx: ExtensionContext) => void;
 }
 
 function ok(text: string, details?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text }], details };
+}
+
+/**
+ * Render, retrying a TRANSIENT failure up to `maxRetries` times, and conclude exactly one result
+ * either way — the caller gets one entry per verb call whatever happens inside.
+ *
+ * Retrying is done HERE, in code, rather than by asking the spoke to call the verb again: a model
+ * deciding when to retry would conclude a second result for the same image, so N images could come
+ * back as N+k entries. A terminal failure exits the loop immediately (see `terminalError`).
+ *
+ * Every attempt is a fresh backend call with its own timeout, never a continuation: the failures
+ * worth retrying (a hung codex we killed, a run that produced nothing) leave nothing to resume.
+ */
+async function renderWithRetry(
+  deps: ImageToolDeps,
+  ctx: ExtensionContext,
+  op: ImageJobResult["op"],
+  label: string,
+  backendId: string,
+  outPath: string,
+  run: () => Promise<BackendResult>,
+) {
+  const maxRetries = loadConfig().maxRetries;
+  let attempt = 0;
+  let lastError = "";
+  while (attempt < maxRetries + 1) {
+    attempt += 1;
+    try {
+      const r = await run();
+      deps.concludeJob(ctx, { ...resultOf(op, r), ...(attempt > 1 ? { attempts: attempt } : {}) });
+      return ok(okText(label, r), { ...r });
+    } catch (err) {
+      lastError = (err as Error).message;
+      if (isTerminal(err) || attempt > maxRetries) break;
+      deps.roleLog.info("render failed, retrying", { op, outPath, attempt, error: lastError });
+    }
+  }
+  // A generation failure is TERMINAL for this job — conclude with a structured failed result so
+  // the caller always gets a verdict, never a prose error to parse.
+  deps.concludeJob(ctx, {
+    status: "failed",
+    op,
+    backend: backendId,
+    out_path: outPath,
+    error: lastError,
+    ...(attempt > 1 ? { attempts: attempt } : {}),
+  });
+  return ok(`Image ${op} FAILED (${backendId}): ${lastError}. Reported to caller.`, { failed: true });
 }
 
 function backendCtx(roleLog: Logger): BackendCtx {
@@ -64,7 +114,7 @@ function okText(verb: string, r: BackendResult): string {
 }
 
 export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void {
-  const { roleLog, concludeJob, setActiveCtx } = deps;
+  const { roleLog, emitStart, setActiveCtx } = deps;
 
   pi.registerTool({
     name: "generate_image",
@@ -93,17 +143,12 @@ export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void 
       // the caller for a valid absolute path, rather than concluding a failed job.
       const outPath = validateOutPath(p.out_path);
       const backend = resolveBackend(p.backend);
-      try {
-        const r = await backend.generate({ prompt: p.prompt, outPath, size: p.size, quality: p.quality }, backendCtx(roleLog));
-        concludeJob(ctx, resultOf("generate", r));
-        return ok(okText("Generated image", r), { ...r });
-      } catch (err) {
-        // A generation failure is TERMINAL for this job — conclude with a structured failed
-        // result so the caller always gets a verdict, never a prose error to parse.
-        const error = (err as Error).message;
-        concludeJob(ctx, { status: "failed", op: "generate", backend: backend.id, out_path: outPath, error });
-        return ok(`Image generation FAILED (${backend.id}): ${error}. Reported to caller.`, { failed: true });
-      }
+      // Announced only AFTER validation passes: an out_path the spoke corrected after a bad first
+      // guess must not leave the driver holding a slot for a path nobody ever asked for.
+      emitStart(ctx, outPath);
+      return renderWithRetry(deps, ctx, "generate", "Generated image", backend.id, outPath, () =>
+        backend.generate({ prompt: p.prompt, outPath, size: p.size, quality: p.quality }, backendCtx(roleLog)),
+      );
     },
   });
 
@@ -141,18 +186,13 @@ export function registerImageTools(pi: ExtensionAPI, deps: ImageToolDeps): void 
       const inputPath = validateInputPath(p.input_path);
       const outPath = validateOutPath(p.out_path);
       const backend = resolveBackend(p.backend);
-      try {
-        const r = await backend.edit(
+      emitStart(ctx, outPath);
+      return renderWithRetry(deps, ctx, "edit", "Edited image", backend.id, outPath, () =>
+        backend.edit(
           { instruction: p.instruction, inputPath, outPath, size: p.size, quality: p.quality },
           backendCtx(roleLog),
-        );
-        concludeJob(ctx, resultOf("edit", r));
-        return ok(okText("Edited image", r), { ...r });
-      } catch (err) {
-        const error = (err as Error).message;
-        concludeJob(ctx, { status: "failed", op: "edit", backend: backend.id, out_path: outPath, error });
-        return ok(`Image edit FAILED (${backend.id}): ${error}. Reported to caller.`, { failed: true });
-      }
+        ),
+      );
     },
   });
 }

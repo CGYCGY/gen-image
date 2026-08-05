@@ -17,6 +17,11 @@ export type Role = "image";
 // the code-derived ImageJobResult JSON. Plain (unmarked) assistant text is a human reply.
 export const READY_MARK = "PIIMAGE_READY";
 export const RESULT_MARK = "PIIMAGE_RESULT";
+// Emitted by a verb the moment it commits to rendering, carrying the out_path it will write.
+// The driver needs a signal BEFORE the render: without it, a spoke model that emits no verb call
+// at all is indistinguishable from one still working, and the caller waits out the whole budget
+// to learn nothing happened (observed: a 25 min turn that never reached a verb).
+export const START_MARK = "PIIMAGE_START";
 
 // pi process --name tag; distinctive enough that `pkill -f PI_NAME` targets the spoke's pi
 // without matching a driver's own argv.
@@ -46,4 +51,29 @@ export interface ImageJobResult {
   warning?: string;
   /** Failure reason; presence accompanies status:"failed". */
   error?: string;
+  /**
+   * Renders spent on this image, present only when it took more than one. A retried image that
+   * ends up ok still says so — otherwise a backend failing half the time reads as perfectly
+   * healthy and the degradation is invisible until it fails outright.
+   */
+  attempts?: number;
+}
+
+/**
+ * A failure that must NOT be retried, because retrying re-rolls a SAFETY verdict rather than a
+ * flaky render: the claim-once collision and the ambiguous multi-candidate session. Those two
+ * exist to make cross-assignment loud, and a retry that happens to succeed mutes the alarm
+ * without fixing what tripped it.
+ *
+ * Flagged on the error object rather than by class, so it survives the module boundary between
+ * the backends and the verb that catches them.
+ */
+export function terminalError(message: string): Error {
+  const e = new Error(message);
+  (e as Error & { terminal?: boolean }).terminal = true;
+  return e;
+}
+
+export function isTerminal(err: unknown): boolean {
+  return Boolean((err as { terminal?: boolean } | null | undefined)?.terminal);
 }

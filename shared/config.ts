@@ -92,6 +92,13 @@ export interface Config {
    * investigating a suspected mis-delivery.
    */
   keepSourceImages: boolean;
+  /**
+   * Extra renders allowed for ONE image after a failed attempt (0 disables retrying). Each retry
+   * is a fresh `codex exec` with its own timeout, never a continuation of the failed one. Applies
+   * only to transient failures; a terminal one (claim collision, ambiguous session) never retries
+   * however high this is, because those are safety verdicts rather than flaky renders.
+   */
+  maxRetries: number;
   output: OutputConfig;
   codex: CodexConfig;
 }
@@ -150,6 +157,7 @@ function parseConfig(raw: unknown): Config {
     thinking: optStr(r, "thinking"),
     maxConcurrentRenders: clampInt(num(r, "maxConcurrentRenders", 20), 1, 200),
     keepSourceImages: bool(r, "keepSourceImages", false),
+    maxRetries: clampInt(num(r, "maxRetries", 1), 0, 5),
     output: {
       format: outputFormat(output),
       quality: clampInt(num(output, "quality", 80), 1, 100),
