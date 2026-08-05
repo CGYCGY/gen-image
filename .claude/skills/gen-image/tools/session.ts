@@ -63,9 +63,9 @@ import {
 
 // An image turn is spoke boot + codex exec + however long the run QUEUES — render slots are a
 // machine-wide ceiling and the spoke model itself queues under wide fan-out. Queued calls must
-// complete, not fail, so the budget derives from the render's own 900 s SIGKILL ceiling plus
-// queue/boot headroom rather than sitting below it (a flat 8 min budget dropped 13 of 30
-// legitimately-queued calls in validation). Overridable for fast smoke tests.
+// complete, not fail, so the budget must sit ABOVE the render's own SIGKILL ceiling
+// (`codex.timeoutMs`) rather than below it — a flat 8 min budget dropped 13 of 30
+// legitimately-queued calls in validation. Overridable for fast smoke tests.
 function defaultTurnBudgetMs(): number {
   try {
     return loadImageCfg(resolveImageDir()).codexTimeoutMs + 10 * 60_000;
@@ -274,8 +274,6 @@ function sendOnce(p: Paths, message: string): Out {
   return { kind: "error", reason: "timeout", detail: `no result within ${Math.round(TURN_BUDGET_MS / 60_000)} min.` };
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-
 /**
  * Import the resolver from the RESOLVED checkout rather than by relative path: this skill can
  * be copied out of pi-image and pointed back with PI_IMAGE_DIR, where a relative import would
@@ -301,8 +299,6 @@ async function stylePrefix(imageDir: string, names: string[]): Promise<string> {
   styles.logResolution(res);
   return res.text ? `${res.text}\n\n` : "";
 }
-
-// ── CLI subcommands ──────────────────────────────────────────────────────────
 
 async function cmdStyles(): Promise<never> {
   const styles = await loadStyles(resolveImageDir());
@@ -378,8 +374,7 @@ function cmdClean(): never {
   });
 }
 
-// ── The detached spoke: owns the pi RPC pipes, bridges FIFO ↔ .out ─────────────
-
+/** The detached spoke: owns the pi RPC pipes and bridges FIFO → pi → `.out`. */
 function runSpoke(): never {
   const imageDir = resolveImageDir();
   const cfg = loadImageCfg(imageDir);
@@ -538,8 +533,6 @@ function runSpoke(): never {
   void loop();
   return undefined as never;
 }
-
-// ── Dispatch ──────────────────────────────────────────────────────────────────
 
 const sub = process.argv[2];
 // Pull the flags out of the tail; everything left joins into the message. --style is
