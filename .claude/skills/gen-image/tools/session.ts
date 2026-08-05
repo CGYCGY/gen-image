@@ -78,7 +78,7 @@ const UP_READY_TIMEOUT_MS = Number(process.env.PI_IMAGE_READY_TIMEOUT_MS) || 60_
 
 type Out =
   | { kind: "ok"; detail: string; looks?: string[]; forms?: string[] }
-  | { kind: "result"; result: Record<string, unknown>; text?: string }
+  | { kind: "results"; results: Record<string, unknown>[]; text?: string }
   | { kind: "reply"; text: string }
   | { kind: "error"; reason: string; detail: string };
 
@@ -91,7 +91,7 @@ function emit(o: Out): never {
   process.stdout.write(`\n${JSON.stringify({ ...o, session: SESSION })}\n`);
   let code = 1;
   if (o.kind === "ok" || o.kind === "reply") code = 0;
-  else if (o.kind === "result") code = o.result?.status === "ok" ? 0 : 1;
+  else if (o.kind === "results") code = o.results.length > 0 && o.results.every((r) => r.status === "ok") ? 0 : 1;
   process.exit(code);
 }
 
@@ -252,7 +252,7 @@ function sendOnce(p: Paths, message: string): Out {
         let msg: {
           id?: string;
           kind?: string;
-          result?: Record<string, unknown>;
+          results?: Record<string, unknown>[];
           text?: string;
           reason?: string;
           detail?: string;
@@ -263,7 +263,7 @@ function sendOnce(p: Paths, message: string): Out {
           continue;
         }
         if (msg.id !== id) continue; // a stale/aborted prior turn — ignore
-        if (msg.kind === "result") return { kind: "result", result: msg.result ?? {}, text: msg.text };
+        if (msg.kind === "results") return { kind: "results", results: msg.results ?? [], text: msg.text };
         if (msg.kind === "reply") return { kind: "reply", text: msg.text ?? "" };
         if (msg.kind === "error") return { kind: "error", reason: msg.reason ?? "error", detail: msg.detail ?? "" };
       }
@@ -323,7 +323,7 @@ async function cmdGenerate(message: string, ephemeral: boolean, styleNames: stri
   // Auto-down when the image CONCLUDED in one shot; leave it up on a question so the caller
   // can answer with `send --session <this session>` (and `down` when finished). An ephemeral
   // session is also reaped on error — nothing will ever come back for it.
-  if (out.kind === "result" || (ephemeral && out.kind === "error")) tearDown(p);
+  if (out.kind === "results" || (ephemeral && out.kind === "error")) tearDown(p);
   emit(out);
 }
 
@@ -559,7 +559,9 @@ function runSpoke(): never {
     }
   };
 
-  let current: { id: string; result?: Record<string, unknown> } | null = null;
+  // results accumulates because ONE turn may conclude MANY images: pi executes sibling tool
+  // calls concurrently, so a multi-image request emits one RESULT notify per verb call.
+  let current: { id: string; results: Record<string, unknown>[] } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const clearCurrent = (): void => {
     if (timer) clearTimeout(timer);
@@ -619,7 +621,7 @@ function runSpoke(): never {
       return;
     }
     if (note.result !== undefined) {
-      if (current) current.result = note.result as Record<string, unknown>;
+      if (current) current.results.push(note.result as Record<string, unknown>);
       return;
     }
     if (msg.type === "agent_end") {
@@ -630,8 +632,11 @@ function runSpoke(): never {
     if (msg.type === "response" && current && msg.id === `verdict:${current.id}`) {
       const text = (msg.data?.text ?? "").trim();
       // An image CONCLUDED iff the spoke emitted its code-derived result this turn; otherwise
-      // the assistant text is a question/status to relay back to the caller.
-      if (current.result !== undefined) append({ id: current.id, kind: "result", result: current.result, text });
+      // the assistant text is a question/status to relay back to the caller. One image keeps
+      // emitting `result` verbatim — callers branch on that kind, and a batch must not change
+      // what a single generate looks like.
+      const r = current.results;
+      if (r.length > 0) append({ id: current.id, kind: "results", results: r, text });
       else append({ id: current.id, kind: "reply", text });
       clearCurrent();
     }
@@ -661,7 +666,7 @@ function runSpoke(): never {
           continue;
         }
         if (req.id && typeof req.message === "string") {
-          current = { id: req.id };
+          current = { id: req.id, results: [] };
           const reqId = req.id;
           timer = setTimeout(() => {
             send({ type: "abort" });

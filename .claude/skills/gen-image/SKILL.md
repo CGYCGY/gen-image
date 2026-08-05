@@ -16,10 +16,12 @@ user-invocable: true
 - Every request MUST name an ABSOLUTE out_path (and, for an edit, an absolute input_path). The spoke refuses relative paths and will ask — resolve the path from the user before sending.
 - The request is natural language; the spoke routes it to generate vs edit. For an edit, name the existing image's absolute path and the change to make.
 - A call is synchronous and typically takes 1–2 minutes per image; under heavy parallel load it can additionally wait in the machine-wide render queue (excess calls queue, they never fail) — so a slow call is normal. Do not poll, time out, or re-run it.
-- Branch on the LAST JSON line's `kind` (`result` | `reply` | `error` | `ok`) — see Cookbook.
+- Branch on the LAST JSON line's `kind` (`results` | `reply` | `error` | `ok`) — see Cookbook. A concluded turn is ALWAYS `results`, an ARRAY, even for one image: one entry, same fields. There is no singular form.
 - Every subcommand takes an optional `--session <id>`; each session is a fully isolated spoke (own state, own process). Default session is `main` — except a bare `generate`, which auto-picks a unique ephemeral session, so concurrent one-shot generates NEVER collide.
 - Every output line carries `session`. To follow up on a spoke (answer its question, send the next image), pass that id back via `--session`.
-- For several INDEPENDENT images, fan out in parallel — see Cookbook. `run_in_background: true` is what parallelizes; foreground fan-out silently degrades to N×2 min.
+- For several images, name them ALL in ONE request to ONE session — this is the default, not process fan-out. The spoke issues one verb call per image in a single turn and they render CONCURRENTLY on one spoke: 4 images landed in 78 s, the wall-clock of one.
+- `results` is in COMPLETION order, NOT request order. Match every entry by its `out_path`; never by position. Count them — fewer entries than images asked for means the spoke skipped some, so re-send only the missing paths.
+- Process fan-out (one run_in_background `generate` per image) is the FALLBACK: use it when images need separate sessions (their own back-and-forth), or when a single turn keeps dropping some. It costs one spoke + one pi per image instead of one for the whole batch. `run_in_background: true` is what parallelizes it; foreground fan-out silently degrades to N×2 min.
 - For several images built INTERACTIVELY (back-and-forth, or sequential edits on prior outputs), keep one spoke WARM instead: `up` once → `send` per image → `down` (one boot, many cheap images).
 - Never pass or guess a model — pi-image pins its models in its own config. Generation bills the Codex/ChatGPT subscription; no API key is involved.
 
@@ -64,20 +66,20 @@ user-invocable: true
 3. If the user named any style, add one `--style <name>` per name, in the order they said them.
 
 ### Phase 2: Drive the spoke
-1. One image → run the `generate` tool. Several independent images → parallel fan-out (Cookbook). Several interactive/sequential images → run `up`, then `send` per image, then `down`.
-2. The call is synchronous (1–2 min/image); do not poll or re-run it.
+1. One image → run the `generate` tool. Several images → name them all in ONE request: `up` once, one `send` listing every image with its own absolute path, then `down` (Cookbook). Images needing their own back-and-forth → process fan-out (Cookbook).
+2. The call is synchronous — about 1–2 min whether it renders one image or a batch, since a batch renders concurrently. Do not poll or re-run it.
 3. Parse the LAST JSON line and branch (see Cookbook).
 
 ## Cookbook
 
-### Image concluded
-- **IF:** a tool prints `kind:"result"`
-- **THEN:** if `status=="ok"`, report the RETURNED `out_path` + `bytes` — the returned path, not the one you asked for: the backend may rewrite the extension to match the configured delivery format (`requested_path` present = the file is NOT at the path you requested). If `warning` is present, surface it verbatim. If `"failed"`, surface `error`. A one-shot `generate` already auto-ended; after `up`/`send`, run the `down` tool when finished.
-- **EXAMPLES:** "result status:ok", "image saved"
+### Turn concluded
+- **IF:** a tool prints `kind:"results"`
+- **THEN:** an ARRAY, one entry per image — one entry when one image was asked for. For EACH entry: if `status=="ok"`, report the RETURNED `out_path` + `bytes`, not the path you asked for (the backend may rewrite the extension to match the configured delivery format; `requested_path` present = the file is NOT where you asked). Surface any `warning` verbatim. If `"failed"`, surface that entry's `error` — some entries failing while others succeed is normal and is NOT a whole-turn failure. Entries are in COMPLETION order, so identify each by `out_path`, never by position; fewer entries than images asked for means the spoke skipped some, so re-send only the missing paths. A one-shot `generate` already auto-ended; after `up`/`send`, run the `down` tool when finished.
+- **EXAMPLES:** "result status:ok", "image saved", "generate these 4 illustrations"
 
 ### Spoke asks a question
 - **IF:** a tool prints `kind:"reply"`
-- **THEN:** read its `text` (usually it needs an absolute out_path or input_path); resolve it and answer with the `send` tool, passing `--session <the session from that output line>` so the answer reaches the SAME spoke. Repeat until `kind:"result"`.
+- **THEN:** read its `text` (usually it needs an absolute out_path or input_path); resolve it and answer with the `send` tool, passing `--session <the session from that output line>` so the answer reaches the SAME spoke. Repeat until `kind:"results"`.
 - **EXAMPLES:** "needs an absolute out_path", "which file should I edit?"
 
 ### Unknown style name
@@ -90,8 +92,13 @@ user-invocable: true
 - **THEN:** run the `clean` tool, surface the `detail` (point at `<stateDir>/logs/image.log`), and retry once.
 - **EXAMPLES:** "spoke did not start", "no result within N min"
 
-### Batch of INDEPENDENT images (parallel fan-out — fastest)
-- **IF:** the request needs several images that don't depend on each other and wall-clock matters
+### Batch of images (one turn — DEFAULT)
+- **IF:** the request needs several images that don't depend on each other
+- **THEN:** `up` once, then ONE `send` naming every image with its own absolute out_path, then `down`. The spoke issues one verb call per image in a single turn; pi runs sibling tool calls concurrently, so they render at the same time behind ONE spoke and ONE pi — 4 images in 78 s, versus one spoke + one pi per image for process fan-out. Returns `kind:"results"`, one entry per image, in completion order. Give every image a DISTINCT out_path; two images on one path makes the spoke stop and ask.
+- **EXAMPLES:** "generate these 4 illustrations", "fill all the plan images"
+
+### Batch via process fan-out (FALLBACK)
+- **IF:** each image needs its own back-and-forth, or a one-turn batch keeps coming back short
 - **THEN:** issue one `generate` Bash call PER IMAGE, each with run_in_background: true — they run as concurrent processes, so 7 images land in ~2 min instead of ~14; read each task's output when its completion notification arrives. Do NOT fan out as foreground calls: the harness runs non-read-only Bash sequentially even when batched in one message, so that silently becomes N×2 min. OpenAI does not rate-limit concurrent subscription image_gen renders (verified); total quota burn is the same. Bare `generate` auto-isolates per invocation — no session ids to coordinate. Cap a wave at ~15 concurrent calls — beyond that the SPOKE-model layer stalls, not rendering (observed at 30-way fan-out: first responses starved for many minutes) — and start the next wave as results land. Each call prints its own JSON line; if one prints `kind:"reply"`, answer it afterward with `send --session <its session>`. Collect every `result` and report all paths. Do NOT spawn subagents just for parallelism — only when each image may need its own back-and-forth.
 - **EXAMPLES:** "generate these 7 illustrations", "fill all the plan images fast"
 
@@ -102,6 +109,6 @@ user-invocable: true
 
 ## Report
 
-- Relay the spoke's result faithfully: a job succeeded ONLY when the line is `kind:"result"` AND `status=="ok"` — report its `out_path` and `bytes`. On anything else, report it as failed and surface `error` (or the `reply` text).
+- Relay the spoke's results faithfully: an image succeeded ONLY when the line is `kind:"results"` AND that entry's `status=="ok"` — report its `out_path` and `bytes`. On anything else, report it as failed and surface `error` (or the `reply` text).
 - Always report the result's `out_path`, never the path you requested — they differ whenever `requested_path` is present. Surface `warning` whenever it is set.
-- When several images were generated, list each path.
+- When several images were generated, list each path, and say which failed if any did — never report a batch as wholly succeeded when one entry failed, and never drop a failed entry silently.

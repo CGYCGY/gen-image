@@ -24,8 +24,9 @@ Non-goals:
 - Not a daemon or a network service. It is a pi subprocess the caller owns over pipes — no HTTP port,
   no token, no portfile.
 - Not an image library/CDN. It writes one file to the path the caller names and is done.
-- Not multi-job-at-once per spoke. One verb per request, one image at a time. A batch parallelizes by
-  summoning multiple isolated spokes (driver sessions, §8), never by overlapping jobs inside one.
+- Not a job queue. One request may conclude several images — one verb call each, rendered concurrently
+  inside the turn (§8) — but nothing is persisted: no job store, no retry, no resuming a partial batch.
+  A failed entry comes back failed and the caller re-asks for that one.
 
 ## 2. The gate — a closed semantic tool surface
 
@@ -255,7 +256,21 @@ notify markers (`ctx.ui.notify` → `extension_ui_request`, `method: "notify"`) 
   before sending work.
 - `PIIMAGE_RESULT <json>` — the `ImageJobResult` (`status`, `op`, `backend?`, `model?`, `out_path?`,
   `format?`, `requested_path?`, `bytes?`, `warning?`, `error?`). `bytes` > 0 is the proof the file
-  landed, and `format` always describes the bytes at `out_path`.
+  landed, and `format` always describes the bytes at `out_path`. One notify per verb call, so a turn
+  that concluded several images emits several.
+
+The driver accumulates a turn's notifies and reports one shape to its caller — `kind: "results"`, always
+an array, one entry for one image and N for N:
+
+- No singular form exists. A second shape for the common case would buy nothing and cost every consumer
+  a branch. One-entry arrays are the normal case.
+- Completion order, not request order — concurrent renders finish out of order. Identify entries by
+  `out_path`, never by position.
+- A short array means the spoke issued fewer verb calls than the request named. The caller re-asks for
+  the missing paths.
+- Mixed `ok`/`failed` entries are normal, not a whole-turn failure.
+- Distinct from `PIIMAGE_RESULT` above: that stays one notify per verb call, and is what the driver
+  accumulates into this array.
 
 Callers must report the returned `out_path`, not the one they asked for. `requested_path` is present
 exactly when the configured delivery format rewrote the caller's path (§4), and an agent that reports its
@@ -287,6 +302,16 @@ the end.
 - Warm within a run, not forever. The point is a single batch/plan run, not an always-on daemon (§1).
   `down`/abort at the end of the run; cold start loses nothing, since pi-image owns no persistent state
   beyond config, its logs, and the coordination files below.
+- Batch inside one turn — the default for several independent images. pi executes sibling tool calls
+  from one assistant message concurrently, so a request naming N images has the spoke issue N verb calls
+  in one turn and the renders overlap behind one spoke and one `pi`.
+  - Measured: 2 images in 71 s, the two `codex exec` launches 5 ms apart; 4 images in 78 s, all four
+    within 9 ms. Each is about one render's wall-clock.
+  - Costs 1 spoke + 1 pi + N codex, against N + N + N for the session-per-image shape below, and one
+    spoke boot instead of N.
+  - §3's guards are untouched: every image still gets its own verb call, its own `codex exec`, and so
+    its own codex session dir. This adds concurrency without widening what detection must reason about.
+  - Distinct `out_path`s are required. Two images on one path make the spoke stop and ask.
 - Parallel sessions trade warmth for wall-clock. Each driver session (`--session <id>`, state under
   `<stateDir>/sessions/<id>/`) is an isolated spoke: own FIFO, own state file, own per-session pi `--name`
   tag, so tearing one down cannot pkill a sibling. A bare one-shot `generate` auto-picks a pid-unique
