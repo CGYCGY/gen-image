@@ -3,9 +3,7 @@
  *
  * WHY shell out to `codex exec` instead of calling the OpenAI Images API: the built-in
  * image_gen tool bills the ChatGPT/Codex SUBSCRIPTION (no OPENAI_API_KEY), whereas the
- * Images API is key-billed. pi itself has no image tool, so the subscription path is only
- * reachable through codex. The capability lives behind this verb's CODE — the pi spoke LLM
- * never reaches codex (pi principle #2).
+ * Images API is key-billed. The codex CLI is the only way to reach that subscription path.
  *
  * The built-in tool does NOT let us choose the output filename — it writes under
  * $CODEX_HOME/generated_images/<session>/, and the basename varies by driver model (`call_*.png`
@@ -250,8 +248,8 @@ export async function deliver(source: string, requested: string, ctx: BackendCtx
 }
 
 /**
- * The always-on rules (styles/base.md), injected HERE rather than in the persona or a style
- * preset: no preset can omit them and no calling agent can forget them. Placed after the
+ * The always-on rules (styles/base.md), injected HERE rather than in a style preset or the
+ * caller's prompt: no preset can omit them and no calling agent can forget them. Placed after the
  * request and before the operational trailer, so they read as constraints on the content.
  */
 function baseBlock(): string {

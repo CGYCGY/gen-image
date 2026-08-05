@@ -3,7 +3,7 @@
  *
  * The resource being protected is shared by every process on the host (the provider's rate limit,
  * and N codex subprocesses' worth of RAM), so an in-process counter would be useless: a second
- * driver session, agent or terminal would not see it. Slots are therefore files in the state dir,
+ * CLI invocation, agent or terminal would not see it. Slots are therefore files in the state dir,
  * arbitrated by O_EXCL create — the same mechanism claims.ts uses, for the same reason.
  *
  * Waiting callers QUEUE and never fail: asking for 30 images must yield 30 images, just later.

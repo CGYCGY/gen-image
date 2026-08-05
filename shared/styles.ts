@@ -26,7 +26,7 @@ import { appendJsonl } from "./log.ts";
 
 export const STYLES_DIR = join(PROJECT_DIR, "styles");
 
-/** Closed on purpose (§ "keep it small and closed"); grow it only when a real conflict appears. */
+/** Closed on purpose; grow it only when a real conflict appears (DESIGN §5). */
 export const CONTESTED_KEYS = ["orientation", "text"] as const;
 export type ContestedKey = (typeof CONTESTED_KEYS)[number];
 

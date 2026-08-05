@@ -8,7 +8,7 @@
  * cannot provide, since a run can only see its own session dir.
  *
  * O_EXCL create is the whole mechanism: the kernel arbitrates, so it holds across processes,
- * terminals and driver sessions without a lock daemon. Uses only node: built-ins.
+ * terminals and concurrent CLI invocations without a lock daemon. Uses only node: built-ins.
  */
 
 import { createHash } from "node:crypto";

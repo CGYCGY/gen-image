@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "pi-image",
+      "name": "gen-image",
       "dependencies": {
         "sharp": "^0.35.3",
       },
