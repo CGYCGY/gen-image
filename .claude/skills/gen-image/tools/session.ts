@@ -34,7 +34,9 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   readSync,
   rmSync,
   statSync,
@@ -52,9 +54,7 @@ import {
   parseNotify,
   paths,
   type Paths,
-  PI_NAME_PREFIX,
   piArgs,
-  piName,
   resolveImageDir,
   resolveSession,
   sessionsRoot,
@@ -122,8 +122,8 @@ function sessionLive(p: Paths): boolean {
   return Boolean(st && pidAlive(st.pid) && existsSync(p.fifo));
 }
 
-/** SIGTERM the detached spoke, fall back to pkill-by-tag, then SIGKILL survivors; reap files. */
-function tearDown(p: Paths, session: string): void {
+/** SIGTERM the detached spoke, then SIGKILL whatever is still standing; reap files. */
+function tearDown(p: Paths): void {
   const st = readState(p);
   const pid = st?.pid;
   const piPid = st?.piPid;
@@ -134,20 +134,20 @@ function tearDown(p: Paths, session: string): void {
       /* already gone */
     }
   }
-  // Anchor the tag so session "img1" can't also match a parallel "img10" (pkill -f is a
-  // substring ERE over the space-joined cmdline).
-  spawnSync("pkill", ["-TERM", "-f", `${piName(session)}( |$)`]);
   const deadline = Date.now() + 12_000;
   while (pidAlive(pid) && Date.now() < deadline) sleep(0.5);
-  if (pidAlive(pid)) {
-    for (const x of [pid, piPid])
-      if (typeof x === "number")
-        try {
-          process.kill(x, "SIGKILL");
-        } catch {
-          /* gone */
-        }
-    sleep(1);
+  // pi exits on its stdin closing with the spoke, so give it that beat before forcing it. A
+  // `pkill -TERM -f <session tag>` used to stand in for this and could never work: pi rewrites
+  // its argv to a bare "pi", so the tag it was spawned with appears in no command line. What it
+  // could match was the CALLER's shell, whenever that command line mentioned the tag.
+  if (pidAlive(piPid)) sleep(1);
+  for (const x of [pid, piPid]) {
+    if (!pidAlive(x)) continue;
+    try {
+      process.kill(x as number, "SIGKILL");
+    } catch {
+      /* gone */
+    }
   }
   rmSync(p.dir, { recursive: true, force: true });
 }
@@ -194,7 +194,7 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths, session: string): B
   for (;;) {
     const st = readState(p);
     if (st && !pidAlive(st.pid)) {
-      tearDown(p, session);
+      tearDown(p);
       return {
         ok: false,
         reused: false,
@@ -207,7 +207,7 @@ function bringUp(imageDir: string, _cfg: ImageCfg, p: Paths, session: string): B
     }
     if (st?.ready) return { ok: true, reused: false };
     if (Date.now() > readyDeadline) {
-      tearDown(p, session);
+      tearDown(p);
       return {
         ok: false,
         reused: false,
@@ -323,7 +323,7 @@ async function cmdGenerate(message: string, ephemeral: boolean, styleNames: stri
   // Auto-down when the image CONCLUDED in one shot; leave it up on a question so the caller
   // can answer with `send --session <this session>` (and `down` when finished). An ephemeral
   // session is also reaped on error — nothing will ever come back for it.
-  if (out.kind === "result" || (ephemeral && out.kind === "error")) tearDown(p, SESSION);
+  if (out.kind === "result" || (ephemeral && out.kind === "error")) tearDown(p);
   emit(out);
 }
 
@@ -350,8 +350,124 @@ function cmdDown(): never {
   const cfg = loadImageCfg(imageDir);
   const p = paths(cfg.stateDir, SESSION);
   const had = sessionLive(p) || existsSync(p.state);
-  tearDown(p, SESSION);
+  tearDown(p);
   emit({ kind: "ok", detail: had ? "spoke session ended" : "no live session" });
+}
+
+/**
+ * This process and every ancestor — never signal the chain clean is running inside. Excluding
+ * our own pid alone is not enough: the scans below match over whole command lines, and the
+ * invoking shell's cmdline quotes clean's own arguments, so it matches whatever clean hunts for.
+ */
+function selfAndAncestors(): Set<number> {
+  const skip = new Set<number>();
+  let pid = process.pid;
+  while (pid > 1 && !skip.has(pid)) {
+    skip.add(pid);
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // comm is parenthesised and may contain spaces; PPID is the 2nd field past the last ')'.
+      pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    } catch {
+      break;
+    }
+  }
+  return skip;
+}
+
+/**
+ * PIDs holding `path` open, minus our own chain. Reads /proc directly because neither `lsof`
+ * nor `fuser` is guaranteed installed. Returns [] anywhere /proc is absent — best effort.
+ */
+function pidsHolding(path: string, skip: Set<number>): number[] {
+  const found: number[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return found;
+  }
+  for (const e of entries) {
+    const pid = Number(e);
+    if (!pid || skip.has(pid)) continue;
+    let fds: string[];
+    try {
+      fds = readdirSync(`/proc/${pid}/fd`);
+    } catch {
+      continue; // another user's process, or it exited mid-scan
+    }
+    for (const fd of fds) {
+      try {
+        if (readlinkSync(`/proc/${pid}/fd/${fd}`) === path) {
+          found.push(pid);
+          break;
+        }
+      } catch {
+        /* fd closed under us */
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Our own driver processes (`bun …/tools/session.ts …`), excluding this one. Matches on real
+ * argv from /proc/<pid>/cmdline, NOT a substring of the joined line: the shell that invoked us
+ * has the whole command in ITS cmdline, so a substring match would kill the caller's terminal.
+ *
+ * This is what catches the leak `pidsHolding` cannot see — a client blocked in appendFileSync's
+ * open() has no fd yet, so it appears in no /proc/<pid>/fd listing.
+ */
+function driverClientPids(skip: Set<number>): number[] {
+  const found: number[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return found;
+  }
+  for (const e of entries) {
+    const pid = Number(e);
+    if (!pid || skip.has(pid)) continue;
+    try {
+      const argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      if (argv.some((a) => a.endsWith("/tools/session.ts"))) found.push(pid);
+    } catch {
+      /* another user's process, or it exited mid-scan */
+    }
+  }
+  return found;
+}
+
+/** Session ids under the sessions root; [] before any session has existed. */
+function sessionIds(stateDir: string): string[] {
+  try {
+    return readdirSync(sessionsRoot(stateDir));
+  } catch {
+    return [];
+  }
+}
+
+/** Every FIFO clean is responsible for: one per session dir, plus the legacy flat one. */
+function sessionFifos(stateDir: string): string[] {
+  return [join(stateDir, "geni.in"), ...sessionIds(stateDir).map((s) => paths(stateDir, s).fifo)];
+}
+
+/**
+ * Both pids every session records: the detached __spoke and the `pi` it owns. This is the only
+ * reliable handle on `pi` — it rewrites its argv to a bare "pi", so the --name tag it was
+ * spawned with appears in no command line and `pkill -f <tag>` matches it never.
+ */
+function sessionPids(stateDir: string): number[] {
+  const out: number[] = [];
+  const states = sessionIds(stateDir).map((s) => readState(paths(stateDir, s)));
+  try {
+    states.push(JSON.parse(readFileSync(join(stateDir, "geni.json"), "utf8")) as Record<string, unknown>);
+  } catch {
+    /* no legacy flat session */
+  }
+  for (const st of states) for (const k of ["pid", "piPid"]) if (typeof st?.[k] === "number") out.push(st[k] as number);
+  return out;
 }
 
 function cmdClean(): never {
@@ -361,17 +477,47 @@ function cmdClean(): never {
   } catch {
     /* fall back to default state dir for cleanup */
   }
-  // Nuke ALL sessions: the un-anchored prefix matches every per-session tag (and the legacy
-  // sessionless one), then the whole sessions root goes; legacy flat geni.* files too.
-  const r = spawnSync("pkill", ["-TERM", "-f", PI_NAME_PREFIX], { encoding: "utf8" });
-  sleep(1);
   const dir = expandTilde(stateDir);
+  const skip = selfAndAncestors();
+
+  // Nuke ALL sessions, from their recorded pids. This replaced a `pkill -f <PI_NAME_PREFIX>`
+  // that could not work — pi shows a bare argv, so the tag matched no spoke — and was actively
+  // dangerous, since pkill cannot spare the caller: a shell whose command line merely MENTIONS
+  // the tag matches it, so running clean from a script that greps for the tag killed that shell.
+  const spokes = sessionPids(dir).filter((p) => !skip.has(p) && pidAlive(p));
+
+  // Blocked clients must die BEFORE anything is unlinked. A `send`/`generate` whose spoke died
+  // blocks forever inside appendFileSync's open() — a FIFO write waits for a reader — and
+  // unlinking the FIFO does NOT wake a writer already blocked on it. Missing these is what left
+  // a client hung on an already-deleted path while clean reported "no stale spoke found".
+  const clients = new Set<number>(driverClientPids(skip));
+  for (const fifo of sessionFifos(dir)) for (const pid of pidsHolding(fifo, skip)) clients.add(pid);
+  for (const p of spokes) clients.delete(p); // keep the two counts disjoint for the report
+
+  const targets = new Set<number>([...spokes, ...clients]);
+  for (const pid of targets) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+  }
+  if (targets.size) sleep(1);
+  for (const pid of targets) {
+    if (!pidAlive(pid)) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  }
+
   rmSync(sessionsRoot(dir), { recursive: true, force: true });
   for (const f of ["geni.in", "geni.out", "geni.json"]) rmSync(`${dir}/${f}`, { force: true });
-  emit({
-    kind: "ok",
-    detail: r.status === 0 ? "killed stale spoke(s) + cleared all session state" : "no stale spoke found; session state cleared",
-  });
+  const did = [spokes.length ? `killed ${spokes.length} spoke process(es)` : "no live spoke found"];
+  if (clients.size) did.push(`killed ${clients.size} stray/blocked client(s)`);
+  did.push("cleared all session state");
+  emit({ kind: "ok", detail: did.join("; ") });
 }
 
 /** The detached spoke: owns the pi RPC pipes and bridges FIFO → pi → `.out`. */

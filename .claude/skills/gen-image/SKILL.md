@@ -53,7 +53,7 @@ user-invocable: true
 ### clean
 - **Run:** `bun "${CLAUDE_SKILL_DIR}/tools/session.ts" clean`
 - **Args:** none
-- **Does:** Kills ALL stale/leftover spoke processes (every session) and clears all session state.
+- **Does:** Kills every session's spoke and its `pi`, plus any driver process still running — including one blocked on a dead session's FIFO — then clears all session state. Reports what it actually killed. It is a nuke: it ends other terminals' in-flight generates too.
 - **Triggers:** "spoke stuck", "clean up pi-image", "stale session"
 
 ## Workflow
