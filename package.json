@@ -1,18 +1,16 @@
 {
-  "name": "pi-image",
+  "name": "gen-image",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Standalone agentic image-generation service, built on pi. Callers request an image over RPC; pi-image generates it via gpt-image-2 on the Codex/ChatGPT subscription (pluggable backends) and returns a structured result.",
+  "description": "Image render service: a JSON spec in, N concurrent renders via gpt-image-2 on the Codex/ChatGPT subscription (pluggable backends), one JSON line of structured results out.",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "smoke": "bun test/rpc-smoke.ts"
+    "test": "bun test",
+    "live": "bun test/live-render.ts"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.1",
-    "@earendil-works/pi-tui": "^0.78.1",
-    "typebox": "1.1.38",
     "@types/bun": "^1.3.14",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"

@@ -1,16 +1,11 @@
 {
-  "_about": "Single source of truth for pi-image. Copy to config.json (gitignored) and adjust. pi-image needs no cloud creds — image generation runs through the Codex/ChatGPT subscription via the local `codex` CLI (no OPENAI_API_KEY).",
+  "_about": "Single source of truth for the render service's settings. Copy to config.json (gitignored) and adjust. No cloud creds are needed — image generation runs through the Codex/ChatGPT subscription via the local `codex` CLI (no OPENAI_API_KEY). Every key is optional; these are the defaults.",
 
-  "stateDir": "~/.pi-image",
-  "_stateDir_note": "Where pi-image writes its logs (<stateDir>/logs/image.log). The RPC driver also keeps session state here.",
-
-  "model": "openai-codex/gpt-5.6-terra",
-  "_model_note": "The pi spoke (orchestrator) model. openai-codex/* runs on the Codex/ChatGPT subscription. Empty = pi default.",
-  "thinking": "high",
-  "_thinking_note": "Reasoning tier for the spoke. Empty = pi default.",
+  "stateDir": "",
+  "_stateDir_note": "Empty = <repo>/state, which is the default. Holds logs/, claims/ and render-slots/. claims/ and render-slots/ are machine-wide O_EXCL arbitration, so keeping them under the checkout means ONE checkout per machine — an accepted constraint. A container overrides this to a mounted volume.",
 
   "maxConcurrentRenders": 20,
-  "_maxConcurrentRenders_note": "Ceiling on concurrent renders, enforced machine-wide via a semaphore in stateDir (every terminal, agent and driver session shares it). Excess callers QUEUE, never fail. A tuning limit for provider throttling and local RAM — not a correctness mechanism. 20 is a judgement call: drop it if throttling appears, raise it if wall-clock matters.",
+  "_maxConcurrentRenders_note": "Ceiling on concurrent renders, enforced machine-wide via a semaphore in stateDir (every process on the host shares it). Excess renders QUEUE, never fail — this is the only concurrency cap, and the CLI adds none of its own. A tuning limit for provider throttling and local RAM, not a correctness mechanism. 20 is a judgement call: drop it if throttling appears, raise it if wall-clock matters.",
 
   "maxRetries": 1,
   "_maxRetries_note": "Extra renders allowed for ONE image after a failed attempt (0 disables retrying). Each retry is a fresh codex exec with its own timeout, never a continuation of the failed one — the failures worth retrying leave nothing to resume. Only TRANSIENT failures retry: a claim-once collision or an ambiguous multi-candidate session is a safety verdict and never retries, because a retry that happens to succeed mutes the alarm without fixing what tripped it. A result that took more than one attempt reports attempts.",
@@ -22,19 +17,20 @@
     "format": "preserve",
     "_format_note": "preserve (honour the out_path extension) | webp | png | jpeg. A non-preserve value rewrites the extension, and the real path comes back as out_path with the original as requested_path. Any format added here must first be verified readable by `codex exec -i`, since today's output is tomorrow's edit input (webp: verified).",
     "quality": 80,
-    "_quality_note": "1-100, lossy formats only. The ENCODER setting — unrelated to the verbs' `quality` render hint, which is prose pasted into the codex prompt. 80 measured 11.6x smaller than PNG.",
+    "_quality_note": "1-100, lossy formats only. The ENCODER setting — unrelated to an image's `quality` render hint, which is prose pasted into the codex prompt. 80 measured 11.6x smaller than PNG.",
     "effort": 6,
     "_effort_note": "0-6, libwebp method. 6 is 5.6% smaller than 4 for ~240 ms against a ~120 s render."
   },
 
   "codex": {
-    "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed). All optional; these are the defaults.",
+    "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed).",
     "bin": "codex",
     "model": "gpt-5.6-sol",
+    "_model_note": "The model that DRIVES image_gen, not the renderer. Keep to a `code_mode` model: `code_mode_only` ones (terra/luna) can't emit a direct tool call and shell out to re-read the imagegen skill doc first — ~50% more tokens for an identical image.",
     "home": "~/.codex",
     "sandbox": "workspace-write",
     "network": true,
     "timeoutMs": 900000,
-    "_timeoutMs_note": "Backstop against a hung codex, NOT an operating limit — set it well above the slowest legitimate run. Generates land at 1-2 min, but an edit was killed mid-render at the old 300000 ceiling."
+    "_timeoutMs_note": "Backstop against a hung codex, NOT an operating limit — set it well above the slowest legitimate run. Generates land at 1-2 min, but an edit was killed mid-render at the old 300000 ceiling. Concurrent renders also queue provider-side, so a cap that is comfortable at N=1 can false-trip under a full parallel batch."
   }
 }

@@ -1,37 +1,16 @@
 /**
- * shared/types.ts — pi-image's result + protocol contracts.
+ * shared/types.ts — the result contract.
  *
- * pi-image is summoned over pi RPC and conversed with in natural language, so there is no
- * bespoke wire union: the caller's request is a prompt, and the verbs take their target as
- * params. What remains is the single structured result a job concludes with (built in code,
- * never parsed from LLM prose) and the notify markers the driver greps for.
+ * One ImageJobResult per requested image, built in code from what the backend actually
+ * produced, and handed back verbatim in the CLI's single JSON line.
  *
- * Uses no pi runtime — importable from config/sandbox/log and the RPC driver.
+ * Uses no runtime dependency at all — importable from anywhere in the tree.
  */
 
-/** pi-image has a single session role. */
+/** Single log role; the log file is <stateDir>/logs/<role>.log. */
 export type Role = "image";
 
-// Notify markers emitted on the RPC event stream (ctx.ui.notify -> extension_ui_request,
-// method:"notify"). READY lets the driver confirm the spoke actually booted; RESULT carries
-// the code-derived ImageJobResult JSON. Plain (unmarked) assistant text is a human reply.
-export const READY_MARK = "PIIMAGE_READY";
-export const RESULT_MARK = "PIIMAGE_RESULT";
-// Emitted by a verb the moment it commits to rendering, carrying the out_path it will write.
-// The driver needs a signal BEFORE the render: without it, a spoke model that emits no verb call
-// at all is indistinguishable from one still working, and the caller waits out the whole budget
-// to learn nothing happened (observed: a 25 min turn that never reached a verb).
-export const START_MARK = "PIIMAGE_START";
-
-// pi process --name tag; distinctive enough that `pkill -f PI_NAME` targets the spoke's pi
-// without matching a driver's own argv.
-export const PI_NAME = "pi-image:rpc";
-
-/**
- * The single structured result a job concludes with. BUILT IN CODE from what the backend
- * actually produced — never from the LLM's prose. Emitted on the RESULT notify channel;
- * the driver returns it verbatim to the calling agent.
- */
+/** The single structured result a render concludes with, whatever happened inside it. */
 export interface ImageJobResult {
   status: "ok" | "failed";
   op: "generate" | "edit";
@@ -66,7 +45,7 @@ export interface ImageJobResult {
  * without fixing what tripped it.
  *
  * Flagged on the error object rather than by class, so it survives the module boundary between
- * the backends and the verb that catches them.
+ * the backends and the retry loop that catches them.
  */
 export function terminalError(message: string): Error {
   const e = new Error(message);

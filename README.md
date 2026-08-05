@@ -1,194 +1,236 @@
-# pi-image
+# gen-image
 
-A standalone, **heavily-gated single-purpose** image-generation service built on [pi](../pi-references).
-A caller **summons** it over pi's native RPC mode and **converses** with it in plain language —
-*"generate a red fox in snow, save to /abs/fox.png"* / *"edit /abs/fox.png to add a hat, save to
-/abs/fox2.png"* — and the spoke's own LLM extracts the intent, runs exactly one verb, and returns a
-structured result. Images are produced by the **Codex CLI's built-in `image_gen`** on your
-ChatGPT/Codex subscription (no `OPENAI_API_KEY`); backends are pluggable. Sibling to
-`pi-deployment-manager`; see [`docs/DESIGN.md`](./docs/DESIGN.md) for the architecture and rationale.
+An image render service with no model in its path. A JSON spec goes in, N images render
+concurrently, one JSON line comes out with one result per requested image in request order.
+Rendering runs through the **Codex CLI's built-in `image_gen`** on a ChatGPT/Codex subscription —
+no `OPENAI_API_KEY`, no cloud creds. Backends are pluggable.
+
+Callers are agents: they read [`SKILL.md`](./SKILL.md), which `setup.sh` installs as a Claude Code
+skill. Architecture and the reasoning behind every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
+
+## setup.sh — the front door
+
+Idempotent. Running it again is also the upgrade path. It:
+
+1. **Locates or clones the checkout** — `--dir`, else `$GEN_IMAGE_DIR`, else the directory the
+   script itself lives in if that is a checkout, else `$HOME/.gen-image`. Missing → `git clone`.
+   Present and a clean git checkout on a branch with an `origin` → `git pull --ff-only`. Local
+   changes, detached HEAD or no origin → warns and skips the update rather than touching your work.
+2. **Preflights** `bun` (fatal if missing) and `codex` (warns, and asks whether to continue, if the
+   binary is absent or `codex login status` fails — only you can log in).
+3. **`bun install`** in the checkout (`sharp` builds native binaries here).
+4. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
+   An existing config is never clobbered without a yes.
+5. **Installs the skill** — copies `SKILL.md` to `~/.claude/skills/gen-image/SKILL.md`.
+6. Prints the resolved paths and a smoke command.
+
+### Flags
+
+```
+-y, --yes                 non-interactive; take defaults, never prompt
+    --dir <path>          checkout location (default: $GEN_IMAGE_DIR, else ~/.gen-image)
+    --repo <url>          git URL to clone when the checkout is missing
+                          (default: $GEN_IMAGE_REPO, else the upstream GitHub URL)
+    --state-dir <path>    config.json stateDir
+    --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
+    --max-concurrent <n>  config.json maxConcurrentRenders
+    --codex-timeout <ms>  config.json codex.timeoutMs
+    --project <path>      install the skill into <path>/.claude/skills/gen-image/
+                          instead of ~/.claude/skills/gen-image/
+    --no-skill            do not install the skill
+-h, --help
+```
+
+The four config flags only apply when a config is actually written. With `-y` and an existing
+`config.json` they are ignored with a warning — delete the file to regenerate it.
+
+`GEN_IMAGE_CONFIG` (if set) redirects both setup and the CLI to a config outside the checkout.
+
+### Fresh machine
+
+```bash
+git clone https://github.com/CGYCGY/gen-image.git ~/.gen-image
+bash ~/.gen-image/setup.sh
+codex login          # if setup said codex was not signed in
+```
+
+Non-interactive (CI, containers):
+
+```bash
+bash ~/.gen-image/setup.sh -y --output-format webp --max-concurrent 8
+```
+
+`setup.sh` run from a directory that is not a checkout will clone one for you, so
+`bash setup.sh --dir /opt/gen-image` works from anywhere.
+
+### Upgrade
+
+```bash
+bash ~/.gen-image/setup.sh          # pulls, reinstalls deps, refreshes the installed skill
+```
+
+Or `git pull` in the checkout — but then re-run `setup.sh` (or copy `SKILL.md` yourself) so the
+installed skill is not left on an old revision, and `bun install` if dependencies moved.
+
+### Smoke test
+
+Renders nothing, spends no quota:
+
+```bash
+bun ~/.gen-image/cli/render.ts --dry-run \
+  '{"images":[{"prompt":"a red circle","out_path":"/tmp/gen-image-smoke.png"}]}'
+```
+
+Expect one line starting `{"kind":"plan"`. For a real render that costs quota, `bun run live`
+(`test/live-render.ts`) drives the CLI as a subprocess end to end.
 
 ## Requirements
 
-- **`codex`** on PATH, signed in with ChatGPT (Codex subscription). The default `gpt-image-2` backend
-  shells out to it; no `OPENAI_API_KEY` is needed or used.
-- **`pi`** (`@earendil-works/pi-coding-agent`) on PATH and authenticated for the `openai-codex`
-  provider. `pi --list-models` should show `openai-codex/gpt-5.6-terra`.
-- **`bun`** to run the extension and the smoke test.
+- **`bun`** — the only runtime. There is no build step.
+- **`codex`** on PATH and signed in (`codex login`) with a ChatGPT/Codex subscription. The default
+  `gpt-image-2` backend shells out to it; this is the entire reason it does not call the Images API.
+- **No API key.** `OPENAI_API_KEY` is neither read nor wanted.
+- `git` only for cloning/updating.
 
-## Quickstart
+## CLI
 
 ```bash
-cp config.json.example config.json   # adjust if your codex home/model differ
-bun install
-
-# end-to-end RPC smoke test: summons the spoke, sends one generate request, verifies the file
-bun test/rpc-smoke.ts --out /abs/path/out.png --prompt "a cute cartoon water droplet, kawaii style"
+bun <repo>/cli/render.ts '<json spec>'     # spec as argv
+bun <repo>/cli/render.ts --stdin           # spec on stdin (big payloads)
+bun <repo>/cli/render.ts --dry-run '<json>'
+bun <repo>/cli/render.ts --list-styles
 ```
 
-With no flags the smoke test writes `./pi-image-smoke.png` with a default prompt. Exit codes: `0` ok
-result + file present, `1` failed/question, `2` timeout.
+stdout carries **exactly one line**: the final JSON. Progress, codex chatter and errors go to
+stderr and `<stateDir>/logs/image.log`, so parsing the last stdout line is always safe.
 
-## The two verbs
+| Output kind | When |
+| --- | --- |
+| `{"kind":"results","results":[…]}` | a render — one `ImageJobResult` per image, in REQUEST order |
+| `{"kind":"plan","images":[…]}` | `--dry-run` |
+| `{"kind":"styles","looks":[…],"forms":[…]}` | `--list-styles` |
+| `{"kind":"error","reason":…,"detail":…}` | `bad_spec` / `unknown_style` / `bad_args` / `config_error` — nothing rendered |
 
-This is the **complete** tool surface the spoke LLM sees — pi's built-in `bash`/`read`/`write`/`edit`/`glob`
-are gated off (`--no-builtin-tools` + `setActiveTools`). The wrong action is *unrepresentable*.
+Exit codes: `0` every image ok (or a successful dry-run/list), `1` at least one image failed,
+`2` spec/usage/config error with nothing written.
 
-| Verb | Purpose | Params |
+The spec schema, style semantics and the caller-side rules live in [`SKILL.md`](./SKILL.md); it is
+the reference for anyone (human or agent) driving the CLI.
+
+## config.json
+
+Gitignored; `config.json.example` is the committed template and carries the same notes inline.
+Every key is optional — a missing or unparseable config falls back to all defaults rather than
+failing.
+
+| Key | Default | What it affects |
 | --- | --- | --- |
-| `generate_image` | Create a NEW image and save it to an absolute `out_path` (parent dirs auto-created). | `prompt`, `out_path`, `size?`, `quality?`, `backend?` |
-| `edit_image` | Edit an EXISTING image (`input_path`) into `out_path`, preserving everything not mentioned. | `instruction`, `input_path`, `out_path`, `size?`, `quality?`, `backend?` |
-
-Paths must be **absolute** and end in `.png`/`.jpg`/`.jpeg`/`.webp`; `input_path` must exist. A missing
-absolute path makes the spoke **stop and ask** rather than invent one.
-
-## RPC protocol contract (for callers)
-
-1. **Spawn** pi in rpc mode with the extension and pin the model:
-
-   ```bash
-   pi --no-extensions --no-builtin-tools -nc --no-session --mode rpc \
-      -e image/index.ts --name pi-image:rpc \
-      --model openai-codex/gpt-5.6-terra --thinking high
-   ```
-
-2. **Wait for READY.** The spoke emits an `extension_ui_request` with `method: "notify"` whose text
-   starts with `PIIMAGE_READY`. Only then is it booted and listening.
-
-3. **Send a prompt** on stdin (one JSONL object per line):
-
-   ```json
-   {"type":"prompt","id":"req-1","message":"Generate this image and save it to /abs/out.png: a red fox in snow, soft morning light"}
-   ```
-
-4. **Read the RESULT.** A concluded job emits a notify whose text is `PIIMAGE_RESULT <json>`, where
-   `<json>` is the `ImageJobResult`:
-
-   ```json
-   {"status":"ok","op":"generate","backend":"gpt-image-2","model":"gpt-5.6-sol","out_path":"/abs/out.png","bytes":482931}
-   ```
-
-   On failure: `{"status":"failed","op":"generate","backend":"gpt-image-2","out_path":"/abs/out.png","error":"<reason>"}`.
-
-   The result is **built in code** from what the backend actually produced — never parsed from the
-   spoke's prose. A turn that ends **without** a `PIIMAGE_RESULT` means the spoke asked a question
-   (e.g. a missing absolute path); read the last assistant text and reply with another `prompt`.
-
-5. **Reuse the session** for every image in one run, then close it (`{"type":"abort"}` / kill the
-   process). Keeping it warm amortizes startup; see *warm-spoke economy* in the design doc.
-
-## Configuration
-
-`config.json` (gitignored; copy from `config.json.example`). Every field has a default, but real RPC
-runs should set `model`/`thinking` so the spoke model is pinned. pi-image holds **no cloud
-creds** — generation rides the Codex subscription via the local `codex` CLI.
-
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `stateDir` | `~/.pi-image` | Logs (`<stateDir>/logs/image.log`) and RPC session state. |
-| `model` | `openai-codex/gpt-5.6-terra` | The pi **spoke** (orchestrator) model. `openai-codex/*` is subscription-backed. |
-| `thinking` | `high` | Spoke reasoning tier. |
-| `maxConcurrentRenders` | `20` | Ceiling on concurrent renders, enforced **machine-wide** by a semaphore in `stateDir` — every terminal, agent and session shares it. Excess callers **queue**, never fail. A tuning limit (provider throttling + local RAM), not a correctness mechanism. |
-| `maxRetries` | `1` | Extra renders allowed for ONE image after a failed attempt (`0` disables). Each retry is a fresh `codex exec` with its own timeout, never a continuation. Applies only to transient failures — a claim collision or an ambiguous session never retries however high this is, because those are safety verdicts, not flaky renders. A retried result carries `attempts`. |
-| `keepSourceImages` | `false` | Keep codex's own copy under `generated_images/` after delivery. `false` makes delivery a **move**, so codex stops accumulating a duplicate of every image ever rendered. Set `true` to keep the sources as an evidence trail while investigating a mis-delivery. |
-| `output.format` | `preserve` | `preserve` honours the `out_path` extension; `webp`/`png`/`jpeg` rewrite it (the real path comes back as `out_path`, the original as `requested_path`). **The bytes at `out_path` always match its extension.** |
-| `output.quality` | `80` | Encoder quality, 1–100, lossy formats only. Distinct from the verbs' `quality` *render* hint. |
-| `output.effort` | `6` | libwebp method, 0–6. Higher is smaller and slower. |
-| `codex.bin` | `codex` | The codex executable (on PATH or absolute). |
-| `codex.model` | `gpt-5.6-sol` | Model codex drives `image_gen` with (not the renderer — gpt-image-2 renders either way). Pinned so a changed codex default can't swap it. Avoid `code_mode_only` models (terra/luna): they can't emit a direct tool call and burn extra shell round-trips. |
+| `stateDir` | `<repo>/state` | Where `logs/`, `claims/` and `render-slots/` live. `~` expands. See the constraint below. |
+| `maxConcurrentRenders` | `20` (clamped 1–200) | Ceiling on concurrent renders, enforced **machine-wide** by an O_EXCL semaphore in `stateDir` — every process on the host shares it. Excess renders **queue**, never fail. This is the only cap; the CLI adds none. A tuning limit (provider throttling, and one `codex exec` subprocess' worth of RAM each), not a correctness mechanism. |
+| `maxRetries` | `1` (clamped 0–5) | Extra renders allowed for ONE image after a failed attempt; `0` disables. Each retry is a fresh `codex exec` with its own timeout. Only **transient** failures retry — a claim collision or an ambiguous session never does, at any value. A result that took more than one attempt reports `attempts`. |
+| `keepSourceImages` | `false` | Keep codex's own copy under `CODEX_HOME/generated_images/` after delivery. `false` makes delivery a **move**, which is what stops that directory growing ~2 MB per image forever. Set `true` to keep the sources as an evidence trail when investigating a suspected mis-delivery. |
+| `output.format` | `preserve` | `preserve` honours the `out_path` extension; `webp`/`png`/`jpeg` rewrite it, and the caller's original comes back as `requested_path`. An unrecognised value silently falls back to `preserve`. **The bytes at `out_path` always match its extension.** |
+| `output.quality` | `80` (1–100) | Encoder quality, lossy formats only. Distinct from an image's `quality` *render hint*, which is prose in the codex prompt. |
+| `output.effort` | `6` (0–6) | libwebp method. Higher is smaller and slower. |
+| `codex.bin` | `codex` | The codex executable — on PATH or absolute. |
+| `codex.model` | `gpt-5.6-sol` | The model that **drives** `image_gen`, not the renderer (gpt-image-2 renders either way). Pinned so a changed codex default cannot swap it. Keep to a `code_mode` model: `code_mode_only` ones (terra/luna) cannot emit a direct tool call and burn ~50% more tokens for an identical image. |
 | `codex.home` | `~/.codex` | `CODEX_HOME`; also where `image_gen` writes (`generated_images/`). |
 | `codex.sandbox` | `workspace-write` | `codex --sandbox` mode for the exec run. |
-| `codex.network` | `true` | Enable network for the workspace-write run (`image_gen` reaches Codex's backend). |
-| `codex.timeoutMs` | `900000` | Hard cap for one `codex exec` (image gen + reasoning). A backstop against a hung codex, not an operating limit. |
+| `codex.network` | `true` | Adds `sandbox_workspace_write.network_access=true` when sandbox is `workspace-write` — the built-in tool reaches Codex's backend over the network. |
+| `codex.timeoutMs` | `900000` | Hard cap for one `codex exec`, after which it is SIGKILLed. A backstop against a hung codex, **not** an operating limit: generates land at 1–2 min, an edit was killed mid-render at a 5-min ceiling, and queued runs stretch further. |
 
-## Backends
+Config is read once per process and cached.
 
-Pluggable registry in `image/backends/`. **Adding a backend = drop one file** implementing the
-`ImageBackend` interface (`generate`/`edit`) + one line in `backends/index.ts`. The verbs never change.
+## State — and one checkout per machine
 
-| Backend | Billing | Status |
-| --- | --- | --- |
-| `gpt-image-2` (default) | **Codex/ChatGPT subscription** — shells `codex exec`, no API key | built |
-| Gemini "Nano Banana" (Vertex AI) | **API key** | future |
-| OpenAI Images API (direct) | **API key** | future |
-
-> **Subscription does not generalize.** Only the Codex-backed default is subscription-billed (the
-> entire reason it shells out to `codex` instead of calling the Images API). Every other backend has
-> its own auth/billing reality — Gemini via Vertex and the OpenAI Images API are **API-key-billed**,
-> and a Codex-backed spoke cannot borrow a Gemini subscription. The `ImageBackend.subscription`
-> boolean records this per backend. Pass a non-default `backend` only when the caller names one.
-
-## Project layout
+`stateDir` (default `<repo>/state/`, gitignored) holds:
 
 ```
-pi-image/
-├── package.json · tsconfig.json · config.json.example · config.json (gitignored) · .gitignore
-├── .pi/APPEND_SYSTEM.md          harness system-prompt note
-├── shared/
-│   ├── config.ts                 loads config.json (stateDir, model, thinking, codex{...})
-│   ├── log.ts                    file logger → <stateDir>/logs/image.log
-│   ├── types.ts                  Role, READY/RESULT marks, PI_NAME, ImageJobResult
-│   ├── sandbox.ts                validateOutPath / validateInputPath (absolute + image-ext guards)
-│   └── subprocess.ts             runCommand (the one place it shells out)
+state/
+├── logs/image.log        operational log; rotates at 2 MB × 5
+├── logs/styles.jsonl     one line per style resolution: names, file shas, winning keys.
+│                         No prompts. Backstop rotation at 50 MB × 2
+├── claims/               O_EXCL claim per codex source image, pruned after 7 days
+└── render-slots/         O_EXCL slot files; the machine-wide concurrency semaphore
+```
+
+`claims/` and `render-slots/` are **machine-wide arbitration**, and they live under the checkout by
+default. So: **one checkout per machine.** Two checkouts rendering at the same time have two
+independent registries — each arbitrates only against itself, `maxConcurrentRenders` becomes 2N,
+and a cross-assignment between the two goes undetected, which is the one failure nothing downstream
+catches. This is an accepted, documented constraint, not a bug. If a second checkout is genuinely
+needed, point both `stateDir`s at the same directory. A container overrides `stateDir` to a mounted
+volume for the same reason.
+
+## Layout
+
+```
+gen-image/
+├── SKILL.md                    the entire skill: one file, installed to ~/.claude/skills/gen-image/
+├── setup.sh                    installer / upgrader
+├── config.json.example         committed template (config.json is gitignored)
+├── cli/render.ts               THE entrypoint: parse argv, validate the whole spec, render all, print one line
 ├── image/
-│   ├── index.ts                  the extension: persona, session_start gate + READY, agent_end compaction
-│   ├── tools.ts                  the two verbs; concludeJob emits RESULT
+│   ├── render.ts               render one image: retry policy + ImageJobResult assembly
 │   └── backends/
-│       ├── types.ts              ImageBackend interface
-│       ├── codex-imagegen.ts     gpt-image-2 backend (codex exec → image_gen) + deliver()
-│       ├── claims.ts             claim each codex source image exactly once, machine-wide
-│       ├── semaphore.ts          state-dir render slots (maxConcurrentRenders; excess queues)
-│       └── index.ts              registry / resolveBackend
-├── .claude/skills/gen-image/    driver skill: callers invoke this to reach the spoke over RPC
-│   ├── SKILL.md                  generate / send / up / down / clean tools (+ cookbook)
-│   └── tools/{session.ts,lib.ts} the RPC driver (warm spoke, FIFO bridge, READY/RESULT)
-└── test/rpc-smoke.ts            end-to-end RPC smoke test
+│       ├── types.ts            the ImageBackend contract
+│       ├── index.ts            registry / resolveBackend (fail-loud)
+│       ├── codex-imagegen.ts   gpt-image-2 via `codex exec` + deliver()
+│       ├── claims.ts           claim each codex source image exactly once, machine-wide
+│       └── semaphore.ts        render slots (maxConcurrentRenders; excess queues)
+├── shared/
+│   ├── config.ts               config.json + defaults; self-locates PROJECT_DIR
+│   ├── log.ts                  file logger + jsonl appender, both size-rotated
+│   ├── types.ts                ImageJobResult, terminalError
+│   ├── sandbox.ts              validateOutPath / validateInputPath / prepareOutPath
+│   ├── styles.ts               style vocabulary: parse, classify, merge
+│   └── subprocess.ts           runCommand — the one place it shells out
+├── styles/
+│   ├── base.md                 rules injected into EVERY render by backend code
+│   ├── looks/*.md              medium, palette, mark-making, texture
+│   └── forms/*.md              artifact kind, layout, orientation, text policy
+├── docs/DESIGN.md
+└── test/                       unit tests (offline) + test/live-render.ts (spends quota)
 ```
 
-## Driver skill (gen-image)
-
-Callers don't spawn `pi` themselves — they use the bundled **gen-image** skill at `.claude/skills/gen-image/`, the analog of `deploy-via-manager`. It owns the spawn → READY → prompt → RESULT dance and keeps the spoke **warm** across a run:
-
-```bash
-GENI="bun .claude/skills/gen-image/tools/session.ts"
-$GENI generate "a red fox mascot, flat vector. Save it to /abs/fox.png"   # one-shot
-# sequential batch on one warm spoke (one boot, many images):
-$GENI up; $GENI send "...save to /abs/a.png"; $GENI send "...save to /abs/b.png"; $GENI down
-# parallel batch — each bare `generate` gets its own isolated ephemeral session, so N images
-# take the wall-clock of one (~2 min); named sessions via --session <id> work too:
-$GENI generate "...save to /abs/a.png" & $GENI generate "...save to /abs/b.png" & wait
-```
-
-### Installing the skill globally
-
-The driver resolves this checkout through a fallback chain — `PI_IMAGE_DIR` env var → skill-local
-`config.json {imageDir}` → self-location (when the skill runs from inside this repo). Pick the rung
-that fits the machine:
-
-- **Symlink (preferred on Linux/macOS/WSL).** One source of truth, zero config — self-location
-  resolves through the realpathed link, so edits in the repo are live globally:
-
-  ```bash
-  ln -s /abs/path/to/pi-image/.claude/skills/gen-image ~/.claude/skills/gen-image
-  ```
-
-- **Copy + `config.json` (Windows, or git/library-distributed installs).** Windows symlinks need
-  admin or Developer Mode and git checkouts mangle them, so copy the skill directory and add
-  `{"imageDir": "/abs/path/to/pi-image"}` next to its `SKILL.md` (see `config.json.example`).
-  `PI_IMAGE_DIR` overrides both for one-off runs against a different checkout.
-
-Either way the machine still needs the [requirements](#requirements) — the skill is a thin driver,
-not a hermetic bundle.
+`bun test` runs the offline suite; `bun run typecheck` runs `tsc --noEmit`.
 
 ## Troubleshooting
 
-- **"codex produced no image" / "Not inside a trusted directory".** The backend already passes
-  `--skip-git-repo-check` and runs from `CODEX_HOME`, so the trusted-dir check is handled. A genuine
-  "no image" means codex returned no new file under `generated_images/`; check the error tail in the
-  RESULT and `<stateDir>/logs/image.log`, and confirm `codex` is signed in.
-- **No `PIIMAGE_RESULT`, just a question.** The spoke is missing a required **absolute** path. Reply
-  with a `prompt` that names an absolute `out_path` (and `input_path` for edits).
-- **Spoke won't boot.** Confirm `pi --list-models` shows the configured `model` and that `codex` is
-  signed in to the Codex subscription. Without the provider authenticated the spoke can't start.
-- **Image lands in the wrong place / unexpected format.** `out_path` must be absolute and end in a
-  supported extension; otherwise the verb throws before doing any work and the spoke asks again.
+**codex not installed or not logged in.** Every render fails at the subprocess. `codex login status`
+should print an account; if not, `npm i -g @openai/codex` then `codex login`. `setup.sh` checks this
+and warns, but cannot do it for you.
+
+**`codex produced no image in session <uuid>`.** Codex ran and returned, but wrote nothing into that
+session's `generated_images/` directory. Read the error tail in the result (codex's own last
+message) and `<stateDir>/logs/image.log`. Usual causes: not signed in, a refused prompt, or the
+subscription's image quota. The trusted-directory check is already handled
+(`--skip-git-repo-check`, cwd `CODEX_HOME`) — that is not this.
+
+**`codex … timed out after Ns and was killed`.** It hit `codex.timeoutMs`. Distinct from "produced
+no image" on purpose. Raise the ceiling if a legitimately slow edit or a deeply queued batch is
+being cut off.
+
+**`codex session … holds N images` / `codex source … was already claimed`.** Safety verdicts, not
+flaky renders: two runs resolved to the same codex output, or one session produced more than one
+candidate. Nothing was delivered and nothing retries. Check for a second checkout with its own
+`state/` (see above) or a stray writer under `generated_images/`.
+
+**The file has a different extension than requested.** `output.format` is not `preserve`, so
+delivery rewrote it. `out_path` in the result is the real file; `requested_path` is what was asked
+for. The bytes always match the extension — that invariant outranks the filename. Set
+`output.format` to `preserve` to keep the caller's extension.
+
+**A result carries `warning`.** The image landed, but a re-encode failed and the original PNG was
+delivered under a `.png` path instead. Non-fatal, and the warning says exactly what happened.
+
+**A failed entry carries `attempts`.** It already retried in code and failed again; re-running it
+identically is unlikely to help. A *successful* result carrying `attempts` is a health signal — the
+backend is failing part of the time and looks fine otherwise.
+
+**Renders are slower than usual with no error.** All slots are busy; the wait is logged when it
+starts and every 30 s after, in `image.log` and on stderr. Queueing never fails a render.
+
+## Licence
+
+MIT.

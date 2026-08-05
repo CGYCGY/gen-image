@@ -1,11 +1,10 @@
 /**
- * shared/subprocess.ts — the one place pi-image shells out.
+ * shared/subprocess.ts — the one place gen-image shells out.
  *
- * The gpt-image-2 backend's CODE drives the `codex` CLI here (pi principle #2: the engine
- * is called by tool code, never reached by the spoke LLM). Capture stdout/stderr; a hard
+ * The gpt-image-2 backend drives the `codex` CLI through here. Capture stdout/stderr; a hard
  * timeout SIGKILLs the run.
  *
- * Uses only node: built-ins, no pi runtime dependency.
+ * Uses only node: built-ins.
  */
 
 import { spawn } from "node:child_process";

@@ -1,7 +1,7 @@
 /**
- * image/backends/types.ts — the pluggable image-backend contract (pi principle #5).
+ * image/backends/types.ts — the pluggable image-backend contract.
  *
- * Every backend exposes the SAME generate/edit surface behind the two verbs. Adding a
+ * Every backend exposes the SAME generate/edit surface behind the two ops. Adding a
  * backend (e.g. gemini "nano-banana" via Vertex API, or the OpenAI Images API directly) =
  * drop one file implementing this interface and register it. The `subscription` flag records
  * the one thing that does NOT generalize across backends: only Codex-backed generation is

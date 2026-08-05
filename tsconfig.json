@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    /* Type checking is the only goal here. pi loads .ts directly via jiti,
+    /* Type checking is the only goal here. bun runs the .ts sources directly,
        so we never emit JS. */
     "noEmit": true,
     "target": "ES2022",
@@ -9,7 +9,7 @@
     "moduleResolution": "bundler",
 
     /* Allow `import "./foo.ts"` with an explicit .ts extension, which is how
-       jiti-loaded pi extensions import sibling shared modules. */
+       the sources import each other under bun. */
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "verbatimModuleSyntax": false,
@@ -26,6 +26,6 @@
     "skipLibCheck": true,
     "types": ["node", "bun"]
   },
-  "include": ["shared/**/*.ts", "image/**/*.ts", "test/**/*.ts", ".claude/skills/gen-image/tools/*.ts"],
+  "include": ["cli/**/*.ts", "shared/**/*.ts", "image/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules"]
 }

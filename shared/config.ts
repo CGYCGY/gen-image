@@ -1,14 +1,12 @@
 /**
- * shared/config.ts — load and parse config.json (pi-image's settings).
+ * shared/config.ts — load and parse config.json (the render service's settings).
  *
- * Unlike a deploy manager, pi-image holds NO cloud creds: image generation runs through
- * the local `codex` CLI on the Codex/ChatGPT subscription. Config covers the spoke model,
- * the state dir, how to drive codex, output delivery, and the render ceiling. Every field
- * has a default, so a missing config.json still yields a working extension (the RPC driver,
- * however, needs model/thinking to pin the spoke model — so config.json should exist for
- * real runs).
+ * There are NO cloud creds here: image generation runs through the local `codex` CLI on the
+ * Codex/ChatGPT subscription. Config covers the state dir, how to drive codex, output delivery,
+ * the retry budget and the render ceiling. Every field has a default, so a missing config.json
+ * still yields a working service.
  *
- * Uses only node: built-ins, no pi runtime dependency.
+ * Uses only node: built-ins.
  */
 
 import { readFileSync } from "node:fs";
@@ -22,8 +20,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** Absolute project root (shared/ lives directly under it). Self-locating: survives moves. */
 export const PROJECT_DIR = resolve(HERE, "..");
 
-/** Absolute path to config.json (project root, parent of shared/). */
-export const CONFIG_PATH = resolve(PROJECT_DIR, "config.json");
+/**
+ * Which config.json to read: GEN_IMAGE_CONFIG if set, else the one beside this checkout.
+ * Resolved per call rather than at import, so an embedder (container entrypoint, test harness)
+ * can point us at a different file before the first loadConfig() without import-order games.
+ */
+export function configPath(): string {
+  const override = process.env.GEN_IMAGE_CONFIG?.trim();
+  return override ? resolve(expandTilde(override)) : resolve(PROJECT_DIR, "config.json");
+}
 
 /** How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription). */
 export interface CodexConfig {
@@ -57,7 +62,7 @@ export type OutputFormat = "preserve" | "png" | "jpeg" | "webp";
 /**
  * How a finished render is delivered to the caller's out_path.
  *
- * `quality` is the ENCODER setting, unrelated to the verbs' `quality` render hint (which is prose
+ * `quality` is the ENCODER setting, unrelated to an image's `quality` render hint (which is prose
  * pasted into the codex prompt). Merging the two would cross-wire an encoder knob with a prompt.
  */
 export interface OutputConfig {
@@ -72,12 +77,13 @@ export interface OutputConfig {
 export interface Config {
   /** Self-located project root (not from JSON). */
   projectDir: string;
-  /** State/logs dir (~ expanded). */
+  /**
+   * Where logs/, claims/ and render-slots/ live (~ expanded). Defaults INSIDE the checkout, which
+   * means one checkout per machine: claims and slots are machine-wide arbitration, so two
+   * checkouts would each arbitrate against themselves only. Accepted constraint — a container
+   * overrides this to a mounted volume.
+   */
   stateDir: string;
-  /** pi spoke model (e.g. openai-codex/gpt-5.6-terra). Empty = pi default. */
-  model?: string;
-  /** pi spoke thinking tier. Empty = pi default. */
-  thinking?: string;
   /**
    * Ceiling on concurrent codex renders, enforced machine-wide through a state-dir semaphore.
    * A TUNING limit (provider throttling + local RAM: each render is a full codex subprocess),
@@ -117,10 +123,6 @@ function str(o: Record<string, unknown>, key: string, def: string): string {
   const v = o[key];
   return typeof v === "string" && v.length > 0 ? v : def;
 }
-function optStr(o: Record<string, unknown>, key: string): string | undefined {
-  const v = o[key];
-  return typeof v === "string" && v.length > 0 ? v : undefined;
-}
 function num(o: Record<string, unknown>, key: string, def: number): number {
   const v = o[key];
   return typeof v === "number" && Number.isFinite(v) ? v : def;
@@ -152,9 +154,7 @@ function parseConfig(raw: unknown): Config {
   const output = asObj(r.output);
   return {
     projectDir: PROJECT_DIR,
-    stateDir: expandTilde(str(r, "stateDir", "~/.pi-image")),
-    model: optStr(r, "model"),
-    thinking: optStr(r, "thinking"),
+    stateDir: expandTilde(str(r, "stateDir", join(PROJECT_DIR, "state"))),
     maxConcurrentRenders: clampInt(num(r, "maxConcurrentRenders", 20), 1, 200),
     keepSourceImages: bool(r, "keepSourceImages", false),
     maxRetries: clampInt(num(r, "maxRetries", 1), 0, 5),
@@ -181,7 +181,7 @@ export function loadConfig(): Config {
   if (cached) return cached;
   let raw: unknown = {};
   try {
-    raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    raw = JSON.parse(readFileSync(configPath(), "utf8"));
   } catch {
     raw = {};
   }
@@ -201,8 +201,4 @@ export function getCodex(): CodexConfig {
 }
 export function getOutput(): OutputConfig {
   return loadConfig().output;
-}
-export function getModelConfig(): { model?: string; thinking?: string } {
-  const c = loadConfig();
-  return { model: c.model, thinking: c.thinking };
 }

@@ -1,8 +1,8 @@
 /**
- * image/backends/index.ts — the pluggable backend registry (pi principle #5).
+ * image/backends/index.ts — the pluggable backend registry.
  *
- * Both verbs resolve their engine here. Adding a backend = drop a file + one line below,
- * never touching the verbs. Future siblings: a gemini "nano-banana" backend (Vertex API)
+ * Both ops resolve their engine here. Adding a backend = drop a file + one line below,
+ * never touching the render path. Future siblings: a gemini "nano-banana" backend (Vertex API)
  * and a direct OpenAI Images API backend — both KEY-billed, unlike the Codex subscription
  * default (the one thing that does not generalize; see DESIGN).
  */

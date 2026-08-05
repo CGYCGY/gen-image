@@ -1,13 +1,14 @@
 /**
- * shared/sandbox.ts — output/input path guards, enforced in code (pi principle #3).
+ * shared/sandbox.ts — output/input path guards, enforced in code.
  *
- * pi-image writes wherever the CALLER names (e.g. a plan's images dir), so the scope is not
- * a fixed allowlist like a deploy manager's. The meaningful, fail-closed guards are: the path
- * must be ABSOLUTE (no cwd ambiguity for a long-lived spoke) and a real image extension; for
+ * We write wherever the CALLER names (e.g. a plan's images dir), so the scope is not a fixed
+ * allowlist like a deploy manager's. The meaningful, fail-closed guards are: the path must be
+ * ABSOLUTE (no cwd ambiguity — the caller's cwd is not ours) and a real image extension; for
  * edits the source must exist. The destination's parent dir is created (the image workflow
- * expects IMAGES_OUTPUT_DIR auto-created).
+ * expects IMAGES_OUTPUT_DIR auto-created), but by a SEPARATE call: validation runs over a whole
+ * spec before anything renders, and a spec that turns out to be bad must leave no dirs behind.
  *
- * Uses only node: built-ins, no pi runtime dependency.
+ * Uses only node: built-ins.
  */
 
 import { existsSync, mkdirSync, statSync } from "node:fs";
@@ -16,7 +17,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
 
 /**
- * Validate + prepare an absolute output image path; creates the parent dir. Returns resolved path.
+ * Validate an absolute output image path. Pure — returns the resolved path, touches nothing.
  *
  * This is a guard, NOT a format decision: the delivered format is resolved later by the backend's
  * deliver() from `output.format` (which may rewrite this extension). All this asserts is that the
@@ -26,7 +27,12 @@ export function validateOutPath(p: string): string {
   if (typeof p !== "string" || p.length === 0) throw new Error("out_path is required.");
   if (!isAbsolute(p)) throw new Error(`out_path must be an absolute path (got "${p}").`);
   if (!IMAGE_EXT.test(p)) throw new Error(`out_path must end in .png/.jpg/.jpeg/.webp (got "${p}").`);
-  const full = resolve(p);
+  return resolve(p);
+}
+
+/** validateOutPath + create the parent dir. Call once the WHOLE spec has passed validation. */
+export function prepareOutPath(p: string): string {
+  const full = validateOutPath(p);
   mkdirSync(dirname(full), { recursive: true });
   return full;
 }

@@ -1,11 +1,12 @@
 /**
  * shared/log.ts — append-only file logger with size-based rotation.
  *
- * pi-image writes timestamped lines to <stateDir>/logs/<role>.log. Use createLogger(role)
- * once and call .info/.warn/.error/.debug. Console echo is off by default — pi owns the TUI.
+ * Timestamped lines go to <stateDir>/logs/<role>.log. Use createLogger(role) once and call
+ * .info/.warn/.error/.debug. Console echo is off by default: the CLI's stdout carries exactly
+ * one JSON line, so anything else on the console has to be opted into.
  * Analytics (one JSON object per line) go through appendJsonl instead.
  *
- * Uses only node: built-ins + shared/config. No pi runtime dependency.
+ * Uses only node: built-ins + shared/config.
  */
 
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
@@ -68,9 +69,9 @@ function rotatedName(path: string, n: number): string {
  * Shift-rotate `path` when it is at or over `maxBytes`: drop `.keep`, shift each older file
  * up one, move `path` to `.1`. Returns whether it fired.
  *
- * Parallel spokes check independently, so two can race here; a rename that loses the race is
+ * Parallel renders check independently, so two can race here; a rename that loses the race is
  * swallowed and the winner's rotation stands — losing one shift is cheaper than a crashed
- * generate.
+ * render.
  */
 export function rotateBySize(path: string, maxBytes: number, keep: number): boolean {
   let size: number;

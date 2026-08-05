@@ -6,15 +6,15 @@
  *   forms/  artifact kind, layout, orientation, text policy, legibility
  *
  * Names are resolved across BOTH directories (the namespaces are disjoint), so a caller never
- * has to know a name's axis to use it. Resolution is driver-side: the merged text is prepended
- * to the request before it reaches the spoke, because the spoke takes prose, not parameters.
+ * has to know a name's axis to use it. The merged text is prepended to the image's own
+ * prompt/instruction before the render, because the backend takes prose, not parameters.
  *
  * Contested properties (orientation, text) live ONLY in form frontmatter and resolve last-wins
  * in flag order; prose bodies concatenate in the same order. Prose cannot contradict the
  * resolved properties because the resolved block is emitted last and says it overrides.
  *
- * This module lives outside .claude/skills/ on purpose: any caller — a plan runner, a script,
- * another agent — can import it. Uses only node: built-ins + shared/config + shared/log.
+ * Importable on its own — a plan runner or a script can list and resolve styles without going
+ * through the CLI. Uses only node: built-ins + shared/config + shared/log.
  */
 
 import { createHash } from "node:crypto";
