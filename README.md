@@ -5,8 +5,10 @@ concurrently, one JSON line comes out with one result per requested image in req
 Rendering runs through the **Codex CLI's built-in `image_gen`** on a ChatGPT/Codex subscription —
 no `OPENAI_API_KEY`, no cloud creds. Backends are pluggable.
 
-Callers are agents: they read [`SKILL.md`](./SKILL.md), which `setup.sh` installs as a Claude Code
-skill. Architecture and the reasoning behind every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
+Callers are agents: they read [`SKILL.md`](./SKILL.md). The skill is normally delivered on its own
+(library sync, or a manual copy) and owns `~/.claude/skills/gen-image`; `setup.sh` only builds the
+runtime and leaves the skill alone unless you pass `--skill`. Architecture and the reasoning behind
+every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
 
 ## setup.sh — the front door
 
@@ -21,7 +23,9 @@ Idempotent. Running it again is also the upgrade path. It:
 3. **`bun install`** in the checkout (`sharp` builds native binaries here).
 4. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
    An existing config is never clobbered without a yes.
-5. **Installs the skill** — copies `SKILL.md` to `~/.claude/skills/gen-image/SKILL.md`.
+5. **Installs the skill only with `--skill`** — copies `SKILL.md` to
+   `~/.claude/skills/gen-image/SKILL.md`. Skipped by default, because the skill is usually already
+   on the machine (that is how you got here) and owns that path.
 6. Prints the resolved paths and a smoke command.
 
 ### Flags
@@ -35,9 +39,10 @@ Idempotent. Running it again is also the upgrade path. It:
     --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
     --max-concurrent <n>  config.json maxConcurrentRenders
     --codex-timeout <ms>  config.json codex.timeoutMs
+    --skill               also install the skill (copy SKILL.md to
+                          ~/.claude/skills/gen-image/); off by default
     --project <path>      install the skill into <path>/.claude/skills/gen-image/
-                          instead of ~/.claude/skills/gen-image/
-    --no-skill            do not install the skill
+                          instead of ~/.claude/skills/gen-image/ (implies --skill)
 -h, --help
 ```
 
@@ -66,11 +71,12 @@ bash ~/.gen-image/setup.sh -y --output-format webp --max-concurrent 8
 ### Upgrade
 
 ```bash
-bash ~/.gen-image/setup.sh          # pulls, reinstalls deps, refreshes the installed skill
+bash ~/.gen-image/setup.sh          # pulls the checkout, reinstalls deps
 ```
 
-Or `git pull` in the checkout — but then re-run `setup.sh` (or copy `SKILL.md` yourself) so the
-installed skill is not left on an old revision, and `bun install` if dependencies moved.
+Or `git pull` in the checkout, plus `bun install` if dependencies moved. The skill upgrades through
+its own channel (library sync); if you installed it with `--skill`, re-run with `--skill` to refresh
+that copy.
 
 ### Smoke test
 

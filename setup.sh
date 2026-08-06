@@ -16,7 +16,10 @@ OPT_OUTPUT_FORMAT=""
 OPT_MAX_CONCURRENT=""
 OPT_CODEX_TIMEOUT=""
 PROJECT_DIR=""
-INSTALL_SKILL=1
+# Off by default: the skill is delivered out of band (library sync, manual copy) and owns
+# ~/.claude/skills/gen-image. --skill is the opt-in for the standalone `clone + setup.sh` path,
+# where nothing else installs it.
+INSTALL_SKILL=0
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_BOLD=$'\033[1m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_GRN=$'\033[32m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
@@ -41,9 +44,10 @@ Usage: setup.sh [options]
       --output-format <f>   config.json output.format ($VALID_FORMATS)
       --max-concurrent <n>  config.json maxConcurrentRenders
       --codex-timeout <ms>  config.json codex.timeoutMs
+      --skill               also install the skill (copy SKILL.md to
+                            ~/.claude/skills/$SKILL_NAME/); off by default
       --project <path>      install the skill into <path>/.claude/skills/$SKILL_NAME/
-                            instead of ~/.claude/skills/$SKILL_NAME/
-      --no-skill            do not install the skill
+                            instead of ~/.claude/skills/$SKILL_NAME/ (implies --skill)
   -h, --help                this text
 EOF
 }
@@ -59,8 +63,8 @@ while [ "$#" -gt 0 ]; do
     --output-format)  need_value "$@"; OPT_OUTPUT_FORMAT="$2"; shift 2 ;;
     --max-concurrent) need_value "$@"; OPT_MAX_CONCURRENT="$2"; shift 2 ;;
     --codex-timeout)  need_value "$@"; OPT_CODEX_TIMEOUT="$2"; shift 2 ;;
-    --project)        need_value "$@"; PROJECT_DIR="$2"; shift 2 ;;
-    --no-skill)       INSTALL_SKILL=0; shift ;;
+    --skill)          INSTALL_SKILL=1; shift ;;
+    --project)        need_value "$@"; PROJECT_DIR="$2"; INSTALL_SKILL=1; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
     *)                usage >&2; die "unknown argument: $1" ;;
   esac
@@ -291,21 +295,21 @@ if [ "$INSTALL_SKILL" -eq 1 ]; then
   SKILL_DEST="$SKILL_ROOT/SKILL.md"
 
   step "Skill: $SKILL_DEST"
-  [ -f "$SKILL_SRC" ] || die "missing $SKILL_SRC — the checkout is incomplete (use --no-skill to skip)"
+  [ -f "$SKILL_SRC" ] || die "missing $SKILL_SRC — the checkout is incomplete"
 
   # A symlinked destination is the pre-revamp layout pointing into an old checkout; writing
   # through it would edit that checkout instead of installing here.
   for link in "$SKILL_ROOT" "$SKILL_DEST"; do
     if [ -L "$link" ]; then
       warn "$link is a symlink -> $(readlink "$link")"
-      confirm "Replace it with a real file?" n || die "left the symlink in place; remove it yourself or re-run with --no-skill"
+      confirm "Replace it with a real file?" n || die "left the symlink in place; remove it yourself or drop --skill"
       rm -f "$link"
     fi
   done
 
   mkdir -p "$SKILL_ROOT"
   if [ -e "$SKILL_DEST" ] && [ "$ASSUME_YES" -eq 0 ]; then
-    confirm "$SKILL_DEST exists. Overwrite?" y || die "skill not installed; re-run with --no-skill to skip this step"
+    confirm "$SKILL_DEST exists. Overwrite?" y || die "skill not installed; drop --skill to skip this step"
   fi
   cp -f "$SKILL_SRC" "$SKILL_DEST"
   say "installed"
