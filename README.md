@@ -6,26 +6,31 @@ Rendering runs through the **Codex CLI's built-in `image_gen`** on a ChatGPT/Cod
 no `OPENAI_API_KEY`, no cloud creds. Backends are pluggable.
 
 Callers are agents: they read [`SKILL.md`](./.claude/skills/gen-image/SKILL.md). The skill is normally delivered on its own
-(library sync, or a manual copy) and owns `~/.claude/skills/gen-image`; `setup.sh` only builds the
-runtime and leaves the skill alone unless you pass `--skill`. Architecture and the reasoning behind
-every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
+(library sync, or a manual copy) and owns `~/.claude/skills/gen-image`. `setup.sh` ships **inside**
+the skill, so an installed skill can build its own runtime with nothing else cloned first; it leaves
+the skill directory alone unless you pass `--skill`. Architecture and the reasoning behind every
+guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
 
 ## setup.sh — the front door
 
-Idempotent. Running it again is also the upgrade path. It:
+Lives at `.claude/skills/gen-image/setup.sh`, i.e. `~/.claude/skills/gen-image/setup.sh` once the
+skill is installed — the order is always **skill first, then setup**. Idempotent. Running it again
+is also the upgrade path. It:
 
-1. **Locates or clones the checkout** — `--dir`, else `$GEN_IMAGE_DIR`, else the directory the
-   script itself lives in if that is a checkout, else `$HOME/.gen-image`. Missing → `git clone`.
-   Present and a clean git checkout on a branch with an `origin` → `git pull --ff-only`. Local
-   changes, detached HEAD or no origin → warns and skips the update rather than touching your work.
+1. **Locates or clones the checkout** — `--dir`, else `$GEN_IMAGE_DIR`, else `$HOME/.gen-image`.
+   Nothing is inferred from where the script itself sits; the skill is installed on its own and has
+   no fixed relationship to the checkout. Missing → `git clone`. Present and a clean git checkout on
+   a branch with an `origin` → `git pull --ff-only`. Local changes, detached HEAD or no origin →
+   warns and skips the update rather than touching your work.
 2. **Preflights** `bun` (fatal if missing) and `codex` (warns, and asks whether to continue, if the
    binary is absent or `codex login status` fails — only you can log in).
 3. **`bun install`** in the checkout (`sharp` builds native binaries here).
 4. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
    An existing config is never clobbered without a yes.
-5. **Installs the skill only with `--skill`** — copies `.claude/skills/gen-image/` (SKILL.md +
-   `reference/`) to `~/.claude/skills/gen-image/`. Skipped by default, because the skill is usually
-   already on the machine (that is how you got here) and owns that path.
+5. **Installs the skill only with `--skill`** — copies the checkout's `.claude/skills/gen-image/`
+   (SKILL.md, `reference/` and this script) to `~/.claude/skills/gen-image/`. Skipped by default,
+   because the skill is already on the machine — that is how this script got there — and normally
+   upgrades through its own channel.
 6. Prints the resolved paths and a smoke command.
 
 ### Flags
@@ -39,8 +44,8 @@ Idempotent. Running it again is also the upgrade path. It:
     --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
     --max-concurrent <n>  config.json maxConcurrentRenders
     --codex-timeout <ms>  config.json codex.timeoutMs
-    --skill               also install the skill (copy .claude/skills/gen-image/ to
-                          ~/.claude/skills/gen-image/); off by default
+    --skill               also install the skill (copy the checkout's .claude/skills/gen-image/
+                          to ~/.claude/skills/gen-image/); off by default
     --project <path>      install the skill into <path>/.claude/skills/gen-image/
                           instead of ~/.claude/skills/gen-image/ (implies --skill)
 -h, --help
@@ -53,30 +58,35 @@ The four config flags only apply when a config is actually written. With `-y` an
 
 ### Fresh machine
 
+Install the skill (library sync, manual copy), then run the script it brought with it. There is
+nothing to clone by hand — it clones the runtime into `~/.gen-image` itself:
+
 ```bash
-git clone https://github.com/CGYCGY/gen-image.git ~/.gen-image
-bash ~/.gen-image/setup.sh
+bash ~/.claude/skills/gen-image/setup.sh
 codex login          # if setup said codex was not signed in
 ```
 
 Non-interactive (CI, containers):
 
 ```bash
-bash ~/.gen-image/setup.sh -y --output-format webp --max-concurrent 8
+bash ~/.claude/skills/gen-image/setup.sh -y --output-format webp --max-concurrent 8
 ```
 
-`setup.sh` run from a directory that is not a checkout will clone one for you, so
-`bash setup.sh --dir /opt/gen-image` works from anywhere.
+The checkout goes wherever you point it — `bash ~/.claude/skills/gen-image/setup.sh --dir
+/opt/gen-image` — and callers find it through `GEN_IMAGE_DIR`.
+
+If you started from a clone instead and nothing else installed the skill, run that checkout's copy
+with `--skill` once: `bash ~/.gen-image/.claude/skills/gen-image/setup.sh --skill`.
 
 ### Upgrade
 
 ```bash
-bash ~/.gen-image/setup.sh          # pulls the checkout, reinstalls deps
+bash ~/.claude/skills/gen-image/setup.sh    # pulls the checkout, reinstalls deps
 ```
 
-Or `git pull` in the checkout, plus `bun install` if dependencies moved. The skill upgrades through
-its own channel (library sync); if you installed it with `--skill`, re-run with `--skill` to refresh
-that copy.
+Or `git pull` in the checkout, plus `bun install` if dependencies moved. The skill — this script
+included — upgrades through its own channel (library sync); if you installed it with `--skill`,
+re-run with `--skill` to refresh that copy.
 
 ### Smoke test
 
@@ -173,8 +183,10 @@ volume for the same reason.
 
 ```
 gen-image/
-├── SKILL.md                    the entire skill: one file, installed to ~/.claude/skills/gen-image/
-├── setup.sh                    installer / upgrader
+├── .claude/skills/gen-image/   the skill, installed as-is to ~/.claude/skills/gen-image/
+│   ├── SKILL.md                what a calling agent reads
+│   ├── reference/              spec, styles and results detail, read on demand
+│   └── setup.sh                installer / upgrader — ships with the skill, builds the runtime
 ├── config.json.example         committed template (config.json is gitignored)
 ├── cli/render.ts               THE entrypoint: parse argv, validate the whole spec, render all, print one line
 ├── image/

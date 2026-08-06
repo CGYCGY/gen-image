@@ -48,11 +48,14 @@ Render or edit image files by handing a JSON spec to a render CLI — it validat
 
 `$HOME/.gen-image` is the install location; `GEN_IMAGE_DIR` is a plain shell override for a checkout somewhere else — the shell expands it, so write the command exactly as above and it works either way. Implementation lives in the install, not in this skill's directory.
 
+If that path does not exist, the runtime was never installed. `setup.sh` sits next to this file — `~/.claude/skills/gen-image/setup.sh` for a user-level install, `<project>/.claude/skills/gen-image/setup.sh` for a project one. Run it once with `-y` (it clones and builds the runtime, about a minute), then render. Tell the user if it reports that `codex` is missing or not logged in: only they can fix that, and every render fails until they do.
+
 ## Supporting Files
 
 - `reference/spec.md` - Spec format: top-level shape, per-image field table, full example, `--stdin` usage
 - `reference/styles.md` - Style resolution rules and the available style names
 - `reference/results.md` - Result JSON shape, rules for using it, exit codes
+- `setup.sh` - Installs and upgrades the runtime this skill drives; only needed when the install is missing or stale
 
 ## Report
 

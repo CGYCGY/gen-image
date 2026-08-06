@@ -16,9 +16,8 @@ OPT_OUTPUT_FORMAT=""
 OPT_MAX_CONCURRENT=""
 OPT_CODEX_TIMEOUT=""
 PROJECT_DIR=""
-# Off by default: the skill is delivered out of band (library sync, manual copy) and owns
-# ~/.claude/skills/gen-image. --skill is the opt-in for the standalone `clone + setup.sh` path,
-# where nothing else installs it.
+# Off by default: the skill is installed first (that is how this script got here) and upgrades
+# through its own channel. --skill is the opt-in for refreshing that copy from the checkout instead.
 INSTALL_SKILL=0
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -108,14 +107,12 @@ is_repo_root() { [ -f "$1/cli/render.ts" ] && [ -f "$1/config.json.example" ] &&
 
 # ---- 1. locate or obtain the checkout ------------------------------------
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-
+# Nothing is inferred from where this script sits: it ships inside the skill, which is installed on
+# its own and has no fixed relationship to the checkout it sets up.
 if [ -n "$DIR" ]; then
   DIR="$(abspath "$DIR")"
 elif [ -n "${GEN_IMAGE_DIR:-}" ]; then
   DIR="$(abspath "$GEN_IMAGE_DIR")"
-elif is_repo_root "$SCRIPT_DIR"; then
-  DIR="$SCRIPT_DIR"
 else
   DIR="$DEFAULT_DIR"
 fi
@@ -311,6 +308,10 @@ if [ "$INSTALL_SKILL" -eq 1 ]; then
   if [ -e "$SKILL_DEST" ] && [ "$ASSUME_YES" -eq 0 ]; then
     confirm "$SKILL_DEST exists. Overwrite?" y || die "skill not installed; drop --skill to skip this step"
   fi
+  # Unlink before copying: cp truncates and rewrites in place, and the destination setup.sh may be
+  # the very script running this. Removing the name leaves the open inode alive for bash to finish
+  # reading, while cp creates a fresh file underneath.
+  rm -f "$SKILL_ROOT/setup.sh"
   cp -Rf "$SKILL_SRC/." "$SKILL_ROOT/"
   say "installed"
 fi
