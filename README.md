@@ -5,7 +5,7 @@ concurrently, one JSON line comes out with one result per requested image in req
 Rendering runs through the **Codex CLI's built-in `image_gen`** on a ChatGPT/Codex subscription —
 no `OPENAI_API_KEY`, no cloud creds. Backends are pluggable.
 
-Callers are agents: they read [`SKILL.md`](./SKILL.md). The skill is normally delivered on its own
+Callers are agents: they read [`SKILL.md`](./.claude/skills/gen-image/SKILL.md). The skill is normally delivered on its own
 (library sync, or a manual copy) and owns `~/.claude/skills/gen-image`; `setup.sh` only builds the
 runtime and leaves the skill alone unless you pass `--skill`. Architecture and the reasoning behind
 every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
@@ -23,9 +23,9 @@ Idempotent. Running it again is also the upgrade path. It:
 3. **`bun install`** in the checkout (`sharp` builds native binaries here).
 4. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
    An existing config is never clobbered without a yes.
-5. **Installs the skill only with `--skill`** — copies `SKILL.md` to
-   `~/.claude/skills/gen-image/SKILL.md`. Skipped by default, because the skill is usually already
-   on the machine (that is how you got here) and owns that path.
+5. **Installs the skill only with `--skill`** — copies `.claude/skills/gen-image/` (SKILL.md +
+   `reference/`) to `~/.claude/skills/gen-image/`. Skipped by default, because the skill is usually
+   already on the machine (that is how you got here) and owns that path.
 6. Prints the resolved paths and a smoke command.
 
 ### Flags
@@ -39,7 +39,7 @@ Idempotent. Running it again is also the upgrade path. It:
     --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
     --max-concurrent <n>  config.json maxConcurrentRenders
     --codex-timeout <ms>  config.json codex.timeoutMs
-    --skill               also install the skill (copy SKILL.md to
+    --skill               also install the skill (copy .claude/skills/gen-image/ to
                           ~/.claude/skills/gen-image/); off by default
     --project <path>      install the skill into <path>/.claude/skills/gen-image/
                           instead of ~/.claude/skills/gen-image/ (implies --skill)
@@ -120,7 +120,8 @@ stderr and `<stateDir>/logs/image.log`, so parsing the last stdout line is alway
 Exit codes: `0` every image ok (or a successful dry-run/list), `1` at least one image failed,
 `2` spec/usage/config error with nothing written.
 
-The spec schema, style semantics and the caller-side rules live in [`SKILL.md`](./SKILL.md); it is
+The spec schema, style semantics and the caller-side rules live in
+[`SKILL.md`](./.claude/skills/gen-image/SKILL.md); it is
 the reference for anyone (human or agent) driving the CLI.
 
 ## config.json

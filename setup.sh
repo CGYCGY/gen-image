@@ -44,7 +44,7 @@ Usage: setup.sh [options]
       --output-format <f>   config.json output.format ($VALID_FORMATS)
       --max-concurrent <n>  config.json maxConcurrentRenders
       --codex-timeout <ms>  config.json codex.timeoutMs
-      --skill               also install the skill (copy SKILL.md to
+      --skill               also install the skill (copy .claude/skills/$SKILL_NAME/ to
                             ~/.claude/skills/$SKILL_NAME/); off by default
       --project <path>      install the skill into <path>/.claude/skills/$SKILL_NAME/
                             instead of ~/.claude/skills/$SKILL_NAME/ (implies --skill)
@@ -284,7 +284,7 @@ STATE_DIR="$(expand_tilde "$STATE_DIR")"
 
 SKILL_DEST=""
 if [ "$INSTALL_SKILL" -eq 1 ]; then
-  SKILL_SRC="$DIR/SKILL.md"
+  SKILL_SRC="$DIR/.claude/skills/$SKILL_NAME"
   if [ -n "$PROJECT_DIR" ]; then
     PROJECT_DIR="$(abspath "$PROJECT_DIR")"
     [ -d "$PROJECT_DIR" ] || die "--project path does not exist: $PROJECT_DIR"
@@ -294,8 +294,8 @@ if [ "$INSTALL_SKILL" -eq 1 ]; then
   fi
   SKILL_DEST="$SKILL_ROOT/SKILL.md"
 
-  step "Skill: $SKILL_DEST"
-  [ -f "$SKILL_SRC" ] || die "missing $SKILL_SRC — the checkout is incomplete"
+  step "Skill: $SKILL_ROOT"
+  [ -f "$SKILL_SRC/SKILL.md" ] || die "missing $SKILL_SRC/SKILL.md — the checkout is incomplete"
 
   # A symlinked destination is the pre-revamp layout pointing into an old checkout; writing
   # through it would edit that checkout instead of installing here.
@@ -311,7 +311,7 @@ if [ "$INSTALL_SKILL" -eq 1 ]; then
   if [ -e "$SKILL_DEST" ] && [ "$ASSUME_YES" -eq 0 ]; then
     confirm "$SKILL_DEST exists. Overwrite?" y || die "skill not installed; drop --skill to skip this step"
   fi
-  cp -f "$SKILL_SRC" "$SKILL_DEST"
+  cp -Rf "$SKILL_SRC/." "$SKILL_ROOT/"
   say "installed"
 fi
 
