@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 
 import { existingImage, outPath } from "./helpers.ts";
 import { buildJobs, run } from "../cli/render.ts";
-import { listStyles, resolveStyles } from "../shared/styles.ts";
+import { listStyles, orientationOf, resolveStyles, SIZE_WON } from "../shared/styles.ts";
 
 describe("style resolution", () => {
   test("contested properties resolve last-wins in caller order", () => {
@@ -74,5 +74,47 @@ describe("style resolution", () => {
   test("no style leaves the prompt untouched", () => {
     const [job] = buildJobs({ images: [{ prompt: "a fox", out_path: outPath("a.png") }] });
     expect(job?.request.op === "generate" && job.request.prompt).toBe("a fox");
+  });
+});
+
+describe("size versus orientation", () => {
+  test("a size reads as shape, reduced ratio and exact pixels", () => {
+    expect(orientationOf("1536x1024")).toBe("landscape 3:2, exactly 1536x1024 pixels");
+    expect(orientationOf("1024x1536")).toBe("portrait 2:3, exactly 1024x1536 pixels");
+    expect(orientationOf("1024x1024")).toBe("square 1:1, exactly 1024x1024 pixels");
+    // 1672:941 does not reduce; a ratio nobody can picture is left out.
+    expect(orientationOf("1672x941")).toBe("landscape, exactly 1672x941 pixels");
+    expect(orientationOf("wide")).toBeUndefined();
+    expect(orientationOf("0x100")).toBeUndefined();
+  });
+
+  test("an explicit size displaces the form's orientation in the override block", () => {
+    // infographic is 16:9; the caller asked for 3:2. Before this the prompt carried both and 16:9 won.
+    const res = resolveStyles(["infographic"], { size: "1536x1024" });
+    expect(res.props.orientation).toBe("landscape 3:2, exactly 1536x1024 pixels");
+    expect(res.won.orientation).toBe(SIZE_WON);
+    expect(res.props.text).toBe("required"); // the other contested key is untouched
+    expect(res.text).not.toContain("landscape-16x9");
+    expect(res.text).toContain("- orientation: landscape 3:2, exactly 1536x1024 pixels");
+  });
+
+  test("a size alone still yields the override block", () => {
+    const res = resolveStyles([], { size: "1024x1536" });
+    expect(res.files).toEqual([]);
+    expect(res.text).toBe("These override anything above:\n- orientation: portrait 2:3, exactly 1024x1536 pixels");
+  });
+
+  test("the size block is prepended to an unstyled prompt too", () => {
+    const [job] = buildJobs({ images: [{ prompt: "a fox", out_path: outPath("a.png"), size: "1024x1536" }] });
+    const prompt = job?.request.op === "generate" ? job.request.prompt : "";
+    expect(prompt.startsWith("These override anything above:\n- orientation: portrait 2:3")).toBe(true);
+    expect(prompt.endsWith("\n\na fox")).toBe(true);
+    expect(job?.request.size).toBe("1024x1536");
+  });
+
+  test("a bad size is rejected as a spec error", () => {
+    expect(() => buildJobs({ images: [{ prompt: "a", out_path: outPath("a.png"), size: "wide" }] })).toThrow(
+      'images[0].size must be "WxH" in pixels',
+    );
   });
 });

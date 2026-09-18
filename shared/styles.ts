@@ -13,6 +13,11 @@
  * in flag order; prose bodies concatenate in the same order. Prose cannot contradict the
  * resolved properties because the resolved block is emitted last and says it overrides.
  *
+ * A caller's explicit `size` is the most specific statement of aspect there is, so it takes the
+ * orientation slot in that block instead of competing with the form's default from a softer
+ * sentence elsewhere in the prompt. Observed before this: 1536x1024 under a 16:9 form came back
+ * 16:9 on 9 of 10 renders.
+ *
  * Importable on its own — a plan runner or a script can list and resolve styles without going
  * through the CLI. Uses only node: built-ins + shared/config + shared/log.
  */
@@ -35,6 +40,28 @@ const AXIS_DIR: Record<Axis, string> = { look: "looks", form: "forms" };
 
 export type Props = Partial<Record<ContestedKey, string>>;
 
+/** The `won` entry for a value that came from the caller's `size`, not from a style file. */
+export const SIZE_WON = "size";
+
+export const SIZE_RE = /^(\d+)x(\d+)$/;
+
+/**
+ * "1536x1024" → "landscape 3:2, exactly 1536x1024 pixels". Reduced ratios past 20 (1672x941 is
+ * 1672:941) say nothing a reader can picture, so those get the bare dimensions.
+ */
+export function orientationOf(size: string): string | undefined {
+  const m = SIZE_RE.exec(size.trim());
+  if (!m) return undefined;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (w === 0 || h === 0) return undefined;
+  const shape = w === h ? "square" : w > h ? "landscape" : "portrait";
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const g = gcd(w, h);
+  const ratio = Math.max(w / g, h / g) <= 20 ? ` ${w / g}:${h / g}` : "";
+  return `${shape}${ratio}, exactly ${w}x${h} pixels`;
+}
+
 export interface StyleFile {
   name: string;
   axis: Axis;
@@ -53,10 +80,15 @@ export interface Resolution {
   files: StyleFile[];
   /** Winning value per contested key. */
   props: Props;
-  /** Which requested name set each winning value. */
+  /** Which requested name set each winning value; SIZE_WON when the caller's `size` did. */
   won: Partial<Record<ContestedKey, string>>;
   /** Bodies in flag order, then the resolved contested block. Prepend this to the request. */
   text: string;
+}
+
+export interface ResolveOptions {
+  /** The image's own `size` ("WxH" in pixels). Overrides any form's orientation. */
+  size?: string;
 }
 
 function listAxis(axis: Axis): string[] {
@@ -139,8 +171,11 @@ function loadStyle(name: string): StyleFile {
 /**
  * Resolve style names in caller order. Throws on an unknown name, listing the available set —
  * a wrong guess self-corrects in one round trip, so no caller needs to preload an index.
+ *
+ * With no names and no size the text is empty; with a size alone it is just the override block,
+ * so an unstyled image still states its aspect in the strongest voice the prompt has.
  */
-export function resolveStyles(names: string[]): Resolution {
+export function resolveStyles(names: string[], opts: ResolveOptions = {}): Resolution {
   const files = names.map(loadStyle);
   const props: Props = {};
   const won: Partial<Record<ContestedKey, string>> = {};
@@ -151,6 +186,12 @@ export function resolveStyles(names: string[]): Resolution {
       props[key] = v;
       won[key] = f.name;
     }
+  }
+  if (opts.size !== undefined) {
+    const o = orientationOf(opts.size);
+    if (o === undefined) throw new Error(`size must be "WxH" in pixels, e.g. "1536x1024" (got "${opts.size}").`);
+    props.orientation = o;
+    won.orientation = SIZE_WON;
   }
 
   const parts = files.map((f) => f.body).filter(Boolean);

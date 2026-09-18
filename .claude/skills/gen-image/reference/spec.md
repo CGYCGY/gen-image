@@ -34,7 +34,7 @@ Top level: `style` (optional), `images` (required, non-empty). Nothing else — 
 | `instruction` | edit only | what to change. Passing it on a `generate` is an error |
 | `input_path` | edit only | absolute, must already exist, `.png`/`.jpg`/`.jpeg`/`.webp` |
 | `out_path` | yes | absolute, ends `.png`/`.jpg`/`.jpeg`/`.webp`. Parent dirs are created for you. Must be unique within the spec |
-| `size` | no | composition hint, e.g. `"1536x1024"`. Pasted into the render prompt as prose — honoured approximately, never guaranteed |
+| `size` | no | `"WxH"` in pixels, e.g. `"1536x1024"`; anything else is a spec error. Overrides the form's orientation and is stated in the prompt's override block — the tool sizes approximately, so it is honoured closely but never guaranteed |
 | `quality` | no | render hint, e.g. `"high"`. Also prose. Unrelated to the install's encoder quality |
 | `style` | no | replaces the top-level list for this image |
 | `backend` | no | only `gpt-image-2` exists and it is the default. Omit it |

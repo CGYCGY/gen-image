@@ -235,6 +235,13 @@ Merge rules:
 - Frontmatter keys resolve last-wins in the caller's order; prose bodies concatenate in that same
   order. The two cannot contradict each other because the resolved properties are emitted last, in a
   trailing block that says it overrides.
+- An image's explicit `size` takes the orientation slot in that block, displacing whatever form set
+  it, and the block is emitted for an unstyled image too when it has a size. Size and orientation
+  describe one property, aspect, and the backend takes prose, so the only place a caller's aspect can
+  win is the strongest voice in the prompt. When the backend instead appended it as a soft hint
+  ("aim for a 1536x1024 composition"), `1536x1024` under the 16:9 `infographic` form came back 16:9
+  on 9 of 10 renders. A `size` that is not `WxH` in pixels is a spec error, not a passthrough: the
+  backend also asks for it as the tool's size parameter, and a word there is garbage.
 - Multiple names are allowed on either axis and order is precedence: `["infographic","poster"]` is a
   landscape headline poster; reversed, it is a portrait infographic.
 - Names are resolved across both directories, so a caller never has to know a name's axis. The

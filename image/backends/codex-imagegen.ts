@@ -258,7 +258,11 @@ function baseBlock(): string {
 
 function hints(size?: string, quality?: string): string {
   const lines: string[] = [];
-  if (size) lines.push(`Aim for a ${size} composition (the built-in tool sizes approximately).`);
+  // The aspect itself is already stated in the style block's override list (shared/styles.ts),
+  // which the caller's size displaces a form's orientation from. Restating it here in softer
+  // words ("aim for") is what let a 16:9 form win over an explicit 3:2; this line only asks
+  // for the tool parameter.
+  if (size) lines.push(`If the image tool accepts a size parameter, pass "${size}".`);
   if (quality) lines.push(`Render at ${quality} quality with clean, high detail.`);
   return lines.length ? `\n${lines.join("\n")}` : "";
 }

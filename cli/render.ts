@@ -25,6 +25,7 @@ import {
   logResolution,
   logResolutionFailure,
   type Resolution,
+  orientationOf,
   resolveStyles,
 } from "../shared/styles.ts";
 import type { ImageJobResult } from "../shared/types.ts";
@@ -144,23 +145,24 @@ function preview(text: string): string {
  * Resolve style names once per distinct list. Many images in a batch share the top-level list,
  * and re-reading + re-logging the same files N times says nothing the first resolution didn't.
  */
-function styleResolver(): (names: string[]) => Resolution | undefined {
+function styleResolver(): (names: string[], size?: string) => Resolution | undefined {
   const cache = new Map<string, Resolution>();
-  return (names) => {
-    if (names.length === 0) return undefined;
-    const key = JSON.stringify(names);
+  return (names, size) => {
+    if (names.length === 0 && size === undefined) return undefined;
+    const key = JSON.stringify([names, size]);
     const hit = cache.get(key);
     if (hit) return hit;
     let res: Resolution;
     try {
-      res = resolveStyles(names);
+      res = resolveStyles(names, { size });
     } catch (err) {
       const detail = (err as Error).message;
       // A failed lookup is a record of a preset someone wanted and we don't have.
       logResolutionFailure(names, detail);
       throw new SpecError(detail.startsWith("unknown style") ? "unknown_style" : "bad_spec", detail);
     }
-    logResolution(res);
+    // A size with no names read no files: nothing to record.
+    if (names.length > 0) logResolution(res);
     cache.set(key, res);
     return res;
   };
@@ -213,11 +215,16 @@ export function buildJobs(spec: unknown): Job[] {
     }
     seen.set(outPath, i);
 
+    const size = optText(img, "size", where);
+    if (size !== undefined && orientationOf(size) === undefined) {
+      throw new SpecError("bad_spec", `${where}.size must be "WxH" in pixels, e.g. "1536x1024" (got "${size}").`);
+    }
     const names = styleNames(img.style, where) ?? topStyles; // per-image REPLACES, never merges
-    const styleText = styleFor(names)?.text ?? "";
+    // The size rides in the resolved block so it displaces the form's orientation rather than
+    // arguing with it from a softer sentence further down the prompt.
+    const styleText = styleFor(names, size)?.text ?? "";
     const prefix = styleText ? `${styleText}\n\n` : "";
 
-    const size = optText(img, "size", where);
     const quality = optText(img, "quality", where);
     const backend = optText(img, "backend", where);
     if (backend !== undefined) {
