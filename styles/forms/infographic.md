@@ -9,3 +9,4 @@ Present the content as an infographic:
 - Generous whitespace; every point gets room to be seen.
 - Body text large, on quiet high-contrast ground. Never small text over halftone,
   texture, or saturated fill.
+- Solid opaque background across the whole canvas; never transparent.

@@ -7,3 +7,4 @@ Present the content as a technical diagram:
 - Wording is short labels only — no sentences, no paragraphs.
 - Generous whitespace and no decorative clutter.
 - Reads like a well-drawn engineering README diagram.
+- Solid opaque background across the whole canvas; never transparent.
