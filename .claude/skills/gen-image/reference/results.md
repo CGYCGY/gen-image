@@ -4,7 +4,7 @@ The LAST line of stdout is the whole answer. Everything else on stdout and stder
 
 ```json
 {"kind":"results","results":[
-  {"status":"ok","op":"generate","backend":"gpt-image-2","model":"gpt-5.6-sol",
+  {"status":"ok","op":"generate","backend":"gpt-image-2","model":"gpt-6.1-sol",
    "out_path":"/abs/dir/fox.webp","format":"webp","requested_path":"/abs/dir/fox.png","bytes":98213},
   {"status":"failed","op":"generate","backend":"gpt-image-2","out_path":"/abs/dir/boat.png",
    "error":"codex produced no image in session … Tail: …","attempts":2}

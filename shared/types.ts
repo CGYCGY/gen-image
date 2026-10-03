@@ -16,7 +16,7 @@ export interface ImageJobResult {
   op: "generate" | "edit";
   /** Backend id that ran (e.g. "gpt-image-2"). */
   backend?: string;
-  /** Underlying model (e.g. "gpt-5.6-sol" driving the built-in image_gen). */
+  /** Underlying model (e.g. "gpt-6.1-sol" driving the built-in image_gen). */
   model?: string;
   /** Absolute path the image was written to. May differ from what the caller asked for. */
   out_path?: string;

@@ -25,7 +25,7 @@
   "codex": {
     "_note": "How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription-billed).",
     "bin": "codex",
-    "model": "gpt-5.6-sol",
+    "model": "gpt-6.1-sol",
     "_model_note": "The model that DRIVES image_gen, not the renderer. Keep to a `code_mode` model: `code_mode_only` ones (terra/luna) can't emit a direct tool call and shell out to re-read the imagegen skill doc first — ~50% more tokens for an identical image.",
     "home": "~/.codex",
     "sandbox": "workspace-write",

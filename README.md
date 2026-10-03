@@ -150,7 +150,7 @@ failing.
 | `output.quality` | `80` (1–100) | Encoder quality, lossy formats only. Distinct from an image's `quality` *render hint*, which is prose in the codex prompt. |
 | `output.effort` | `6` (0–6) | libwebp method. Higher is smaller and slower. |
 | `codex.bin` | `codex` | The codex executable — on PATH or absolute. |
-| `codex.model` | `gpt-5.6-sol` | The model that **drives** `image_gen`, not the renderer (gpt-image-2 renders either way). Pinned so a changed codex default cannot swap it. Keep to a `code_mode` model: `code_mode_only` ones (terra/luna) cannot emit a direct tool call and burn ~50% more tokens for an identical image. |
+| `codex.model` | `gpt-6.1-sol` | The model that **drives** `image_gen`, not the renderer (gpt-image-2 renders either way). Pinned so a changed codex default cannot swap it. Keep to a `code_mode` model: `code_mode_only` ones (terra/luna) cannot emit a direct tool call and burn ~50% more tokens for an identical image. |
 | `codex.home` | `~/.codex` | `CODEX_HOME`; also where `image_gen` writes (`generated_images/`). |
 | `codex.sandbox` | `workspace-write` | `codex --sandbox` mode for the exec run. |
 | `codex.network` | `true` | Adds `sandbox_workspace_write.network_access=true` when sandbox is `workspace-write` — the built-in tool reaches Codex's backend over the network. |

@@ -165,7 +165,7 @@ function parseConfig(raw: unknown): Config {
     },
     codex: {
       bin: str(codex, "bin", "codex"),
-      model: str(codex, "model", "gpt-5.6-sol"),
+      model: str(codex, "model", "gpt-6.1-sol"),
       home: expandTilde(str(codex, "home", join(homedir(), ".codex"))),
       sandbox: str(codex, "sandbox", "workspace-write"),
       network: bool(codex, "network", true),

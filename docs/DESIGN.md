@@ -78,7 +78,7 @@ The default `gpt-image-2` backend (`image/backends/codex-imagegen.ts`) drives th
 
 ```bash
 codex exec --skip-git-repo-check --json --sandbox workspace-write \
-  -c sandbox_workspace_write.network_access=true -c model=gpt-5.6-sol \
+  -c sandbox_workspace_write.network_access=true -c model=gpt-6.1-sol \
   "<prompt instructing codex to use $imagegen and then stop>"
 ```
 
