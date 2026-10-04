@@ -32,10 +32,12 @@ codex login          # if setup said codex was not signed in
 
 It clones the repo **into `~/.gylab/gen-image` itself**, so in this mode `config.json` and
 `state/` above are the clone's own gitignored root paths, then runs that clone's project
-`setup.sh` with every flag you passed. Re-running it is the upgrade path: a clean clone on a
-branch with an `origin` gets `git pull --ff-only`; local changes, a detached HEAD or no origin
-warn and skip the update. A folder holding only `config.json` and `state/` (left by developer
-mode) is cloned into in place; any other non-git content there is an error.
+`setup.sh` with every flag you passed. It asks before cloning unless you pass `-y`. Re-running it
+is the upgrade path, and it updates both the clone and the skill copy (only the skill's tracked
+files are rewritten): a clean clone on a branch with an `origin` gets `git pull --ff-only`; local
+changes, a detached HEAD or no origin warn and skip the update, and a failed fast-forward warns
+and carries on with the clone as is. A folder holding only `config.json`, `state/` and
+`.DS_Store` (left by developer mode) is cloned into in place; anything else there is an error.
 
 Non-interactive (CI, containers, an agent):
 

@@ -2,88 +2,105 @@
 set -euo pipefail
 
 # Finds or clones the checkout this skill drives, then hands over to that checkout's setup.sh.
-# Safe to re-run: for the ~/.gylab/gen-image clone it is also the upgrade path.
+# Re-running is the upgrade path for the ~/.gylab clone and for a copied skill folder.
 
+NAME="gen-image"
 GYLAB_DIR="$HOME/.gylab/gen-image"
-REPO_URL="${GEN_IMAGE_REPO:-https://github.com/CGYCGY/gen-image.git}"
-DIR=""
-ASSUME_YES=0
+REPO="${GEN_IMAGE_REPO:-https://github.com/CGYCGY/gen-image.git}"
+DIR="" YES=0
 PASS=()
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf '!! %s\n' "$*" >&2; }
 need_value() { [ "$#" -ge 2 ] || die "$1 requires a value"; }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dir)     need_value "$@"; DIR="$2"; shift 2 ;;
-    --repo)    need_value "$@"; REPO_URL="$2"; shift 2 ;;
+    --repo)    need_value "$@"; REPO="$2"; shift 2 ;;
     -h|--help) cat <<EOF
-Usage: setup.sh [--dir <path>] [--repo <url>] [checkout setup options]
+Usage: setup.sh [--dir <path>] [--repo <url>] [checkout setup.sh options, see its --help]
 
-  --dir <path>   checkout to set up (default: \$GEN_IMAGE_DIR, else the checkout this skill sits
-                 in when linked from one, else $GYLAB_DIR, cloned and kept updated)
-  --repo <url>   git URL for that clone (default: \$GEN_IMAGE_REPO, else the upstream GitHub URL)
-
-Every other option (-y, --state-dir, --output-format, --max-concurrent, --codex-timeout) goes to
-the checkout's own setup.sh; see its --help.
+Checkout: --dir, else \$GEN_IMAGE_DIR, else the checkout this skill folder sits in, else
+$GYLAB_DIR (cloned from --repo, \$GEN_IMAGE_REPO or the upstream GitHub URL, then
+fast-forwarded on later runs, refreshing this skill folder too when it is a copy). Every other
+option (-y, --state-dir, --output-format, --max-concurrent, --codex-timeout) goes to its setup.sh.
 EOF
                exit 0 ;;
-    -y|--yes)  ASSUME_YES=1; PASS+=("$1"); shift ;;
+    -y|--yes)  YES=1; PASS+=("$1"); shift ;;
     *)         PASS+=("$1"); shift ;;
   esac
 done
 
 # Checked before cloning so a non-interactive run fails fast. Prompts read /dev/tty, which keeps
 # `curl … | bash` interactive; -r alone passes even when there is no controlling terminal.
-if [ "$ASSUME_YES" -eq 0 ] && ! (: </dev/tty) 2>/dev/null; then
-  die "no terminal available for prompts; re-run with -y"
-fi
+if [ "$YES" -eq 0 ] && ! (: </dev/tty) 2>/dev/null; then die "no terminal available for prompts; re-run with -y"; fi
 
 is_checkout() { [ -f "$1/cli/render.ts" ] && [ -f "$1/package.json" ]; }
 
-# Resolution order is shared with render.sh; keep the two in step.
-HERE="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-HERE="$(cd -P "$(dirname "$HERE")" && pwd -P)"
-LINKED="$(cd -P "$HERE/../../.." 2>/dev/null && pwd -P || true)"
+# readlink -f is missing before macOS 12.3; cd -P still resolves a symlinked skill folder.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SKILL_DIR="$(cd -P "$(dirname "$SELF")" && pwd -P)"
+CALLED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
 
 # The ~/.gylab clone is the skill's own, so it is the one checkout this script may update. A
 # checkout named by --dir or $GEN_IMAGE_DIR is the developer's, even when it is that same path.
 OWNED=0
-if [ -n "$DIR" ] || [ -n "${GEN_IMAGE_DIR:-}" ]; then
-  DIR="${DIR:-$GEN_IMAGE_DIR}"
-  case "$DIR" in "~/"*) DIR="$HOME/${DIR#\~/}" ;; /*) ;; *) DIR="${PWD%/}/$DIR" ;; esac
-else
-  if [ -n "$LINKED" ] && is_checkout "$LINKED"; then DIR="$LINKED"; else DIR="$GYLAB_DIR"; fi
-  case "$DIR" in "$GYLAB_DIR"|"$(cd -P "$GYLAB_DIR" 2>/dev/null && pwd -P)") DIR="$GYLAB_DIR"; OWNED=1 ;; esac
+if [ -n "$DIR" ] || [ -n "${GEN_IMAGE_DIR:-}" ]; then DIR="${DIR:-$GEN_IMAGE_DIR}"
+  case "$DIR" in "~") DIR="$HOME" ;; "~/"*) DIR="$HOME/${DIR#\~/}" ;; /*) ;; *) DIR="${PWD%/}/$DIR" ;; esac
+elif is_checkout "$SKILL_DIR/../../.."; then DIR="$(cd -P "$SKILL_DIR/../../.." && pwd -P)"
+  [ "$DIR" != "$(cd -P "$GYLAB_DIR" 2>/dev/null && pwd -P)" ] || { DIR="$GYLAB_DIR"; OWNED=1; }
+else DIR="$GYLAB_DIR"; OWNED=1
 fi
 
-if [ "$DIR" = "$GYLAB_DIR" ] && ! is_checkout "$DIR"; then
-  command -v git >/dev/null 2>&1 || die "git not found on PATH; install git or clone $REPO_URL to $DIR yourself"
+if [ "$DIR" = "$GYLAB_DIR" ] && [ ! -d "$DIR/.git" ]; then
+  # Developer mode leaves only config.json and state/ here, the clone's own gitignored root paths.
+  for f in "$DIR"/* "$DIR"/.[!.]* "$DIR"/..?*; do
+    [ -e "$f" ] || continue
+    case "${f##*/}" in config.json|state|.DS_Store) ;; *) die "$DIR is not a git clone and holds ${f##*/}; move it aside and re-run" ;; esac
+  done
+  if [ "$YES" -eq 0 ]; then
+    printf 'Clone %s into %s? [Y/n] ' "$REPO" "$DIR" >/dev/tty
+    IFS= read -r answer </dev/tty || answer=n
+    case "${answer:-y}" in [yY]*) ;; *) die "aborted" ;; esac
+  fi
   if [ ! -e "$DIR" ]; then
-    git clone "$REPO_URL" "$DIR" || die "clone of $REPO_URL failed; check the URL (--repo) and your network"
-  elif [ ! -d "$DIR/.git" ]; then
-    # Developer mode leaves only config.json and state/ here; adopt them rather than fail, they are
-    # the clone's gitignored root paths.
-    for f in "$DIR"/* "$DIR"/.[!.]* "$DIR"/..?*; do
-      [ -e "$f" ] || continue
-      case "${f##*/}" in config.json|state) ;; *) die "$DIR holds files other than config.json and state/; move them and re-run" ;; esac
-    done
-    git -C "$DIR" init -q && git -C "$DIR" remote add origin "$REPO_URL" && git -C "$DIR" fetch -q origin \
-      || die "fetch of $REPO_URL into $DIR failed; check the URL (--repo) and your network"
-    BRANCH="$(git -C "$DIR" ls-remote --symref origin HEAD | sed -n 's|^ref: refs/heads/\([^[:space:]]*\).*|\1|p')"
-    [ -n "$BRANCH" ] || die "cannot tell the default branch of $REPO_URL"
-    git -C "$DIR" checkout -q -b "$BRANCH" --track "origin/$BRANCH" || die "checkout of $BRANCH in $DIR failed"
-  fi
-elif [ "$OWNED" -eq 1 ] && [ -d "$DIR/.git" ]; then
-  if [ -n "$(git -C "$DIR" status --porcelain)" ]; then
-    printf '!! local changes in %s; skipping update\n' "$DIR" >&2
-  elif ! git -C "$DIR" symbolic-ref -q HEAD >/dev/null || ! git -C "$DIR" remote get-url origin >/dev/null 2>&1; then
-    printf '!! %s is detached or has no origin; skipping update\n' "$DIR" >&2
+    git clone -q "$REPO" "$DIR" || die "clone of $REPO failed; check the URL (--repo) and your network"
+    printf 'cloned %s into %s\n' "$REPO" "$DIR"
   else
-    git -C "$DIR" pull -q --ff-only || die "git pull --ff-only failed in $DIR; resolve it there and re-run"
+    { git -C "$DIR" init -q && git -C "$DIR" remote add origin "$REPO" && git -C "$DIR" fetch -q origin \
+      && git -C "$DIR" remote set-head origin --auto >/dev/null \
+      && git -C "$DIR" checkout -q --track "$(git -C "$DIR" symbolic-ref --short refs/remotes/origin/HEAD)"
+    } || { rm -rf "$DIR/.git"; die "could not fetch $REPO into $DIR; check the URL (--repo) and your network"; }
+    printf 'adopted %s as a clone of %s\n' "$DIR" "$REPO"
+  fi
+elif [ "$OWNED" -eq 1 ]; then
+  OLD="$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$(git -C "$DIR" status --porcelain)" ]; then warn "local changes in $DIR; skipping update"
+  elif ! git -C "$DIR" symbolic-ref -q HEAD >/dev/null || ! git -C "$DIR" remote get-url origin >/dev/null 2>&1; then
+    warn "$DIR is detached or has no origin; skipping update"
+  elif ! git -C "$DIR" pull -q --ff-only; then warn "could not fast-forward $DIR; continuing with it as is"
+  elif [ "$OLD" = "$(git -C "$DIR" rev-parse --short HEAD)" ]; then printf '%s already up to date\n' "$DIR"
+  else printf 'updated %s (%s..%s)\n' "$DIR" "$OLD" "$(git -C "$DIR" rev-parse --short HEAD)"
   fi
 fi
 
-is_checkout "$DIR" || die "$DIR is not a gen-image checkout (no cli/render.ts or package.json)"
-[ -f "$DIR/setup.sh" ] || die "$DIR has no setup.sh; it predates this skill, update it (git pull) and re-run"
+is_checkout "$DIR" && [ -f "$DIR/setup.sh" ] \
+  || die "$DIR is not a gen-image checkout with a setup.sh; fix --dir, or update it (git pull) and re-run"
+
+# A copied skill folder would keep running old code while the clone moves on. Only tracked files
+# are copied, so user files in the copy survive; a linked folder or one in a checkout is left alone.
+if [ "$OWNED" -eq 1 ] && [ ! -L "$CALLED_DIR" ] && [ ! -L "${BASH_SOURCE[0]}" ] && ! is_checkout "$SKILL_DIR/../../.."; then
+  n=0
+  while IFS= read -r -d '' rel; do
+    dst="$SKILL_DIR/${rel#.claude/skills/$NAME/}"
+    cmp -s "$DIR/$rel" "$dst" && continue
+    mkdir -p "$(dirname "$dst")"
+    # Unlink first: cp would truncate in place, and bash is still reading this setup.sh from it.
+    rm -f "$dst" && cp "$DIR/$rel" "$dst" || die "could not refresh $dst"
+    n=$((n + 1))
+  done < <(git -C "$DIR" ls-files -z -- ".claude/skills/$NAME")
+  [ "$n" -eq 0 ] || printf 'refreshed %s from %s (%s files changed)\n' "$SKILL_DIR" "$DIR" "$n"
+fi
+
 exec bash "$DIR/setup.sh" ${PASS[@]+"${PASS[@]}"}
