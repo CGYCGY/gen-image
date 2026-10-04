@@ -47,7 +47,7 @@ Top level: `style` (optional), `images` (required, non-empty). Nothing else — 
 cat >/tmp/spec.json <<'JSON'
 {"style":["icon"],"images":[{"prompt":"…","out_path":"/abs/a.png"}]}
 JSON
-bun "${GEN_IMAGE_DIR:-$HOME/.gen-image}/cli/render.ts" --stdin </tmp/spec.json
+bash "${CLAUDE_SKILL_DIR}/render.sh" --stdin </tmp/spec.json
 ```
 
 Write the spec with the Write tool if it is long. Do not hand-escape a paragraph of prose into a single-quoted shell argument.

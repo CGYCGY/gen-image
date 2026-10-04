@@ -381,25 +381,38 @@ was observed, and a batch size that has not been seen to fail is absence of evid
 batches are still best run in waves rather than as one 50-image spec — not because the semaphore
 cannot hold, but because a single failure mode observed late costs the whole wave.
 
-## 9. State, and one checkout per machine
+## 9. State and config, one per user
 
-`stateDir` (default `<repo>/state`, `~` expanded) holds `logs/`, `claims/` and `render-slots/`.
+Everything that belongs to the user rather than the code lives in `~/.gylab/gen-image/`:
+`config.json` (redirectable with `GEN_IMAGE_CONFIG`) and `state/` (redirectable with `stateDir`),
+the latter holding `logs/`, `claims/` and `render-slots/`. In skill mode that folder is also the
+git clone, and the two paths are its gitignored repo-root entries; in developer mode it holds only
+those two. Both modes read the same path, so neither needs a special case.
 
-`claims/` and `render-slots/` are machine-wide arbitration, so putting them under the checkout makes
-the checkout the arbitration boundary: **one checkout per machine.** Two checkouts rendering at once
-have two independent registries — each arbitrates only against itself, the effective ceiling becomes
-2×`maxConcurrentRenders`, and a cross-assignment between the two goes undetected, which §3 exists
-entirely to prevent. This is an accepted, documented constraint, not a bug to fix. Two checkouts
-that genuinely must coexist point their `stateDir`s at the same directory; a container overrides it
-to a mounted volume for the same reason.
+`claims/` and `render-slots/` are arbitration: they coordinate only the processes that share the
+directory. Putting the default under the user's home, next to the default `CODEX_HOME`, makes the
+arbitration boundary match the thing being arbitrated — one `generated_images/` per user — rather
+than the checkout, so a developer checkout and the skill's clone share one registry without any
+setup. The failure mode that remains is a deliberate split: two installs with different
+`stateDir`s against one `codex.home` each arbitrate only against themselves, the effective ceiling
+becomes 2×`maxConcurrentRenders`, and a cross-assignment between them goes undetected, which §3
+exists entirely to prevent. A container overrides `stateDir` and `codex.home` to mounted volumes
+together for the same reason.
 
 `PROJECT_DIR` self-locates from `import.meta.url`, so the checkout survives being moved and no
-environment variable is consulted to find the code. `GEN_IMAGE_CONFIG` is the only env var the
-runtime reads, and only to redirect `config.json`; it is resolved per call rather than at import, so
-an embedder can point at a different file before the first `loadConfig()` without import-order
-games. `GEN_IMAGE_DIR` is a `setup.sh` and caller-side convention for *where the checkout is* — no
-runtime code reads it. A missing or unparseable config falls back to all defaults rather than
-failing, so the service works out of the box.
+environment variable is consulted to find the code. The runtime reads two env vars: `HOME`, read
+per call because Bun's `os.homedir()` snapshots it at startup, and `GEN_IMAGE_CONFIG`, only to
+redirect `config.json`. Both are resolved per call rather than at import, so an embedder can point
+at a different file before the first `loadConfig()` without import-order games. A missing or
+unparseable config falls back to all defaults rather than failing, so the service works out of the
+box.
+
+Finding the code is the scripts' job. The skill's `render.sh` and `setup.sh` resolve the checkout
+in one order: `$GEN_IMAGE_DIR` (or `setup.sh --dir`), then the checkout the skill folder really
+sits in when it is linked from one, then `~/.gylab/gen-image`. Only that last one is the skill's
+own, so only it is ever cloned or pulled; a checkout found any other way belongs to a developer.
+The repo-root `setup.sh` makes whichever checkout it sits in runnable (deps, config, state) and
+never touches git, which is what keeps the two modes from stepping on each other.
 
 ## 10. Security & billing notes
 

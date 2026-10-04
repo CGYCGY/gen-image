@@ -5,95 +5,112 @@ concurrently, one JSON line comes out with one result per requested image in req
 Rendering runs through the **Codex CLI's built-in `image_gen`** on a ChatGPT/Codex subscription —
 no `OPENAI_API_KEY`, no cloud creds. Backends are pluggable.
 
-Callers are agents: they read [`SKILL.md`](./.claude/skills/gen-image/SKILL.md). The skill is normally delivered on its own
-(library sync, or a manual copy) and owns `~/.claude/skills/gen-image`. `setup.sh` ships **inside**
-the skill, so an installed skill can build its own runtime with nothing else cloned first; it leaves
-the skill directory alone unless you pass `--skill`. Architecture and the reasoning behind every
-guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
+Callers are agents: they read [`SKILL.md`](./.claude/skills/gen-image/SKILL.md) and run the
+skill's `render.sh`, which finds the runtime checkout and hands it the spec. Architecture and the
+reasoning behind every guard: [`docs/DESIGN.md`](./docs/DESIGN.md).
 
-## setup.sh — the front door
+## Setup
 
-Lives at `.claude/skills/gen-image/setup.sh`, i.e. `~/.claude/skills/gen-image/setup.sh` once the
-skill is installed — the order is always **skill first, then setup**. Idempotent. Running it again
-is also the upgrade path. It:
-
-1. **Locates or clones the checkout** — `--dir`, else `$GEN_IMAGE_DIR`, else `$HOME/.gen-image`.
-   Nothing is inferred from where the script itself sits; the skill is installed on its own and has
-   no fixed relationship to the checkout. Missing → `git clone`. Present and a clean git checkout on
-   a branch with an `origin` → `git pull --ff-only`. Local changes, detached HEAD or no origin →
-   warns and skips the update rather than touching your work.
-2. **Preflights** `bun` (fatal if missing) and `codex` (warns, and asks whether to continue, if the
-   binary is absent or `codex login status` fails — only you can log in).
-3. **`bun install`** in the checkout (`sharp` builds native binaries here).
-4. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
-   An existing config is never clobbered without a yes.
-5. **Installs the skill only with `--skill`** — copies the checkout's `.claude/skills/gen-image/`
-   (SKILL.md, `reference/` and this script) to `~/.claude/skills/gen-image/`. Skipped by default,
-   because the skill is already on the machine — that is how this script got there — and normally
-   upgrades through its own channel.
-6. Prints the resolved paths and a smoke command.
-
-### Flags
+Two scripts, two ways to have the repo on a machine. Both keep everything that is yours in one
+place:
 
 ```
--y, --yes                 non-interactive; take defaults, never prompt
-    --dir <path>          checkout location (default: $GEN_IMAGE_DIR, else ~/.gen-image)
-    --repo <url>          git URL to clone when the checkout is missing
-                          (default: $GEN_IMAGE_REPO, else the upstream GitHub URL)
-    --state-dir <path>    config.json stateDir
-    --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
-    --max-concurrent <n>  config.json maxConcurrentRenders
-    --codex-timeout <ms>  config.json codex.timeoutMs
-    --skill               also install the skill (copy the checkout's .claude/skills/gen-image/
-                          to ~/.claude/skills/gen-image/); off by default
-    --project <path>      install the skill into <path>/.claude/skills/gen-image/
-                          instead of ~/.claude/skills/gen-image/ (implies --skill)
--h, --help
+~/.gylab/gen-image/
+├── config.json     runtime config (GEN_IMAGE_CONFIG overrides the path)
+└── state/          logs/, claims/, render-slots/ (config.json stateDir overrides it)
 ```
 
-The four config flags only apply when a config is actually written. With `-y` and an existing
-`config.json` they are ignored with a warning — delete the file to regenerate it.
+### Skill mode — you only have the skill
 
-`GEN_IMAGE_CONFIG` (if set) redirects both setup and the CLI to a config outside the checkout.
-
-### Fresh machine
-
-Install the skill (library sync, manual copy), then run the script it brought with it. There is
-nothing to clone by hand — it clones the runtime into `~/.gen-image` itself:
+The skill folder arrives on its own (library sync, a manual copy) at
+`~/.claude/skills/gen-image/`. Its `setup.sh` gets the runtime for you:
 
 ```bash
 bash ~/.claude/skills/gen-image/setup.sh
 codex login          # if setup said codex was not signed in
 ```
 
-Non-interactive (CI, containers):
+It clones the repo **into `~/.gylab/gen-image` itself**, so in this mode `config.json` and
+`state/` above are the clone's own gitignored root paths, then runs that clone's project
+`setup.sh` with every flag you passed. Re-running it is the upgrade path: a clean clone on a
+branch with an `origin` gets `git pull --ff-only`; local changes, a detached HEAD or no origin
+warn and skip the update. A folder holding only `config.json` and `state/` (left by developer
+mode) is cloned into in place; any other non-git content there is an error.
+
+Non-interactive (CI, containers, an agent):
 
 ```bash
 bash ~/.claude/skills/gen-image/setup.sh -y --output-format webp --max-concurrent 8
 ```
 
-The checkout goes wherever you point it — `bash ~/.claude/skills/gen-image/setup.sh --dir
-/opt/gen-image` — and callers find it through `GEN_IMAGE_DIR`.
+### Developer mode — you have a checkout
 
-If you started from a clone instead and nothing else installed the skill, run that checkout's copy
-with `--skill` once: `bash ~/.gen-image/.claude/skills/gen-image/setup.sh --skill`.
-
-### Upgrade
+Clone wherever you like and link the skill to it, so edits to the skill are live:
 
 ```bash
-bash ~/.claude/skills/gen-image/setup.sh    # pulls the checkout, reinstalls deps
+git clone https://github.com/CGYCGY/gen-image.git ~/projects/gen-image
+ln -s ~/projects/gen-image/.claude/skills/gen-image ~/.claude/skills/gen-image
+bash ~/projects/gen-image/setup.sh
 ```
 
-Or `git pull` in the checkout, plus `bun install` if dependencies moved. The skill — this script
-included — upgrades through its own channel (library sync); if you installed it with `--skill`,
-re-run with `--skill` to refresh that copy.
+The repo-root `setup.sh` makes **that checkout** work and never clones or pulls: updating it is
+your business. `~/.gylab/gen-image` then holds just `config.json` and `state/`. The skill finds the
+checkout through the link, so its `setup.sh` (which `render.sh` points an agent at) also lands on
+the project script without touching git.
+
+### Which checkout the skill uses
+
+The skill's `setup.sh` and `render.sh` resolve it the same way, first match wins:
+
+1. `--dir <path>` (`setup.sh` only), then `$GEN_IMAGE_DIR`
+2. the checkout the skill folder really lives in — symlinks resolved, three levels up, confirmed
+   by `cli/render.ts` and `package.json`
+3. `~/.gylab/gen-image`, cloned if missing (from `--repo`, else `$GEN_IMAGE_REPO`, else upstream)
+
+Only case 3 is ever pulled. A checkout found by 1 or 2 is the developer's and is left alone.
+
+### What the project setup.sh does
+
+1. **Preflights** `bun` (fatal if missing) and `codex` (warns, and asks whether to continue, if the
+   binary is absent or `codex login status` fails — only you can log in).
+2. **`bun install`** in the checkout (`sharp` builds native binaries here).
+3. **Writes `config.json`** from `config.json.example`, prompting for the four keys worth choosing.
+   An existing config is never touched.
+4. **Creates the state dir** and prints the resolved paths and a smoke command.
+
+### Flags
+
+Project `setup.sh` (repo root):
+
+```
+-y, --yes                 non-interactive; take defaults, never prompt
+    --state-dir <path>    config.json stateDir (default: ~/.gylab/gen-image/state)
+    --output-format <f>   config.json output.format (preserve | webp | png | jpeg)
+    --max-concurrent <n>  config.json maxConcurrentRenders
+    --codex-timeout <ms>  config.json codex.timeoutMs
+-h, --help
+```
+
+The four config flags only apply when a config is actually written. With an existing
+`config.json` they are ignored with a warning: edit it, or delete it to regenerate.
+
+The skill's `setup.sh` adds two of its own and passes everything else through:
+
+```
+    --dir <path>          checkout to set up (default: the resolution above)
+    --repo <url>          git URL for the ~/.gylab/gen-image clone
+                          (default: $GEN_IMAGE_REPO, else the upstream GitHub URL)
+-h, --help
+```
+
+Prompts read `/dev/tty`, so `curl … | bash` stays interactive; with no terminal, pass `-y`.
 
 ### Smoke test
 
 Renders nothing, spends no quota:
 
 ```bash
-bun ~/.gen-image/cli/render.ts --dry-run \
+bash ~/.claude/skills/gen-image/render.sh --dry-run \
   '{"images":[{"prompt":"a red circle","out_path":"/tmp/gen-image-smoke.png"}]}'
 ```
 
@@ -136,13 +153,14 @@ the reference for anyone (human or agent) driving the CLI.
 
 ## config.json
 
-Gitignored; `config.json.example` is the committed template and carries the same notes inline.
+Lives at `~/.gylab/gen-image/config.json` (or `$GEN_IMAGE_CONFIG`); `config.json.example` is the
+committed template and carries the same notes inline.
 Every key is optional — a missing or unparseable config falls back to all defaults rather than
 failing.
 
 | Key | Default | What it affects |
 | --- | --- | --- |
-| `stateDir` | `<repo>/state` | Where `logs/`, `claims/` and `render-slots/` live. `~` expands. See the constraint below. |
+| `stateDir` | `~/.gylab/gen-image/state` | Where `logs/`, `claims/` and `render-slots/` live. Empty means the default; `~` expands. See below. |
 | `maxConcurrentRenders` | `20` (clamped 1–200) | Ceiling on concurrent renders, enforced **machine-wide** by an O_EXCL semaphore in `stateDir` — every process on the host shares it. Excess renders **queue**, never fail. This is the only cap; the CLI adds none. A tuning limit (provider throttling, and one `codex exec` subprocess' worth of RAM each), not a correctness mechanism. |
 | `maxRetries` | `1` (clamped 0–5) | Extra renders allowed for ONE image after a failed attempt; `0` disables. Each retry is a fresh `codex exec` with its own timeout. Only **transient** failures retry — a claim collision or an ambiguous session never does, at any value. A result that took more than one attempt reports `attempts`. |
 | `keepSourceImages` | `false` | Keep codex's own copy under `CODEX_HOME/generated_images/` after delivery. `false` makes delivery a **move**, which is what stops that directory growing ~2 MB per image forever. Set `true` to keep the sources as an evidence trail when investigating a suspected mis-delivery. |
@@ -158,9 +176,9 @@ failing.
 
 Config is read once per process and cached.
 
-## State — and one checkout per machine
+## State — one per user, shared by every checkout
 
-`stateDir` (default `<repo>/state/`, gitignored) holds:
+`stateDir` (default `~/.gylab/gen-image/state/`) holds:
 
 ```
 state/
@@ -171,23 +189,26 @@ state/
 └── render-slots/         O_EXCL slot files; the machine-wide concurrency semaphore
 ```
 
-`claims/` and `render-slots/` are **machine-wide arbitration**, and they live under the checkout by
-default. So: **one checkout per machine.** Two checkouts rendering at the same time have two
-independent registries — each arbitrates only against itself, `maxConcurrentRenders` becomes 2N,
-and a cross-assignment between the two goes undetected, which is the one failure nothing downstream
-catches. This is an accepted, documented constraint, not a bug. If a second checkout is genuinely
-needed, point both `stateDir`s at the same directory. A container overrides `stateDir` to a mounted
-volume for the same reason.
+`claims/` and `render-slots/` are **arbitration**: they only coordinate processes that share the
+directory. The default sits beside the default `CODEX_HOME` (`~/.codex`), so every checkout run by
+the same user — a developer checkout and the skill's `~/.gylab` clone alike — shares one registry
+over one `generated_images/` with no setup. What breaks it is giving two installs different
+`stateDir`s against the same `codex.home`: each arbitrates only against itself,
+`maxConcurrentRenders` becomes 2N, and a cross-assignment between them goes undetected, which is
+the one failure nothing downstream catches. Move `stateDir` for every install at once or not at
+all. A container overrides `stateDir` and `codex.home` to mounted volumes together.
 
 ## Layout
 
 ```
 gen-image/
-├── .claude/skills/gen-image/   the skill, installed as-is to ~/.claude/skills/gen-image/
+├── .claude/skills/gen-image/   the skill, copied or linked to ~/.claude/skills/gen-image/
 │   ├── SKILL.md                what a calling agent reads
 │   ├── reference/              spec, styles and results detail, read on demand
-│   └── setup.sh                installer / upgrader — ships with the skill, builds the runtime
-├── config.json.example         committed template (config.json is gitignored)
+│   ├── render.sh               launcher: resolves the checkout, runs cli/render.ts
+│   └── setup.sh                finds or clones the checkout, then runs its setup.sh
+├── setup.sh                    project setup: deps, ~/.gylab/gen-image/{config.json,state/}
+├── config.json.example         committed template for ~/.gylab/gen-image/config.json
 ├── cli/render.ts               THE entrypoint: parse argv, validate the whole spec, render all, print one line
 ├── image/
 │   ├── render.ts               render one image: retry policy + ImageJobResult assembly
@@ -198,7 +219,7 @@ gen-image/
 │       ├── claims.ts           claim each codex source image exactly once, machine-wide
 │       └── semaphore.ts        render slots (maxConcurrentRenders; excess queues)
 ├── shared/
-│   ├── config.ts               config.json + defaults; self-locates PROJECT_DIR
+│   ├── config.ts               config.json + defaults (~/.gylab/gen-image); self-locates PROJECT_DIR
 │   ├── log.ts                  file logger + jsonl appender, both size-rotated
 │   ├── types.ts                ImageJobResult, terminalError
 │   ├── sandbox.ts              validateOutPath / validateInputPath / prepareOutPath
@@ -232,8 +253,8 @@ being cut off.
 
 **`codex session … holds N images` / `codex source … was already claimed`.** Safety verdicts, not
 flaky renders: two runs resolved to the same codex output, or one session produced more than one
-candidate. Nothing was delivered and nothing retries. Check for a second checkout with its own
-`state/` (see above) or a stray writer under `generated_images/`.
+candidate. Nothing was delivered and nothing retries. Check for a second install with its own
+`stateDir` (see above) or a stray writer under `generated_images/`.
 
 **The file has a different extension than requested.** `output.format` is not `preserve`, so
 delivery rewrote it. `out_path` in the result is the real file; `requested_path` is what was asked

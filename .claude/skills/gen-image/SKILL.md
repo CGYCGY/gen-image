@@ -38,7 +38,7 @@ Render or edit image files by handing a JSON spec to a render CLI — it validat
 ## Tools
 
 ### render
-- **Run:** `bun "${GEN_IMAGE_DIR:-$HOME/.gen-image}/cli/render.ts" '<json spec>'`
+- **Run:** `bash "${CLAUDE_SKILL_DIR}/render.sh" '<json spec>'`
 - **Args:** `spec (json string, positional)` — the render spec; mutually exclusive with `--stdin`
 - **Args:** `--stdin (flag, optional)` — read the spec from stdin instead; use for anything over a few hundred characters, or any prompt containing quotes
 - **Args:** `--dry-run (flag, optional)` — validate + report the plan, render nothing, spend no quota
@@ -46,16 +46,17 @@ Render or edit image files by handing a JSON spec to a render CLI — it validat
 - **Does:** Validates the whole spec, renders every image concurrently, prints one JSON result line.
 - **Triggers:** "generate an image", "create a logo", "edit this picture", "render these icons"
 
-`$HOME/.gen-image` is the install location; `GEN_IMAGE_DIR` is a plain shell override for a checkout somewhere else — the shell expands it, so write the command exactly as above and it works either way. Implementation lives in the install, not in this skill's directory.
+`render.sh` finds the runtime checkout and runs its CLI with your arguments: `$GEN_IMAGE_DIR` if set, else the checkout this skill folder lives in when it is linked from one, else `~/.gylab/gen-image`. Write the command exactly as above and it works in every case. Implementation lives in the checkout, not in this skill's directory; config and state live in `~/.gylab/gen-image/`.
 
-If that path does not exist, the runtime was never installed. `setup.sh` sits next to this file — `~/.claude/skills/gen-image/setup.sh` for a user-level install, `<project>/.claude/skills/gen-image/setup.sh` for a project one. Run it once with `-y` (it clones and builds the runtime, about a minute), then render. Tell the user if it reports that `codex` is missing or not logged in: only they can fix that, and every render fails until they do.
+If `render.sh` says the runtime is not set up, run `bash "${CLAUDE_SKILL_DIR}/setup.sh" -y` once (it clones and builds the runtime, about a minute), then render. Tell the user if it reports that `codex` is missing or not logged in: only they can fix that, and every render fails until they do.
 
 ## Supporting Files
 
 - `reference/spec.md` - Spec format: top-level shape, per-image field table, full example, `--stdin` usage
 - `reference/styles.md` - Style resolution rules and the available style names
 - `reference/results.md` - Result JSON shape, rules for using it, exit codes
-- `setup.sh` - Installs and upgrades the runtime this skill drives; only needed when the install is missing or stale
+- `render.sh` - Launcher: resolves the runtime checkout and runs its render CLI
+- `setup.sh` - Installs and upgrades the runtime this skill drives; only needed when `render.sh` says it is missing or the user asks to upgrade
 
 ## Report
 

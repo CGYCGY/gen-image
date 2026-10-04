@@ -21,13 +21,29 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const PROJECT_DIR = resolve(HERE, "..");
 
 /**
- * Which config.json to read: GEN_IMAGE_CONFIG if set, else the one beside this checkout.
+ * $HOME first: Bun's os.homedir() snapshots HOME at startup, so a test harness or embedder that
+ * repoints HOME at runtime would otherwise still land in the real home.
+ */
+function home(): string {
+  return process.env.HOME?.trim() || homedir();
+}
+
+/**
+ * Per-user data dir, shared by every checkout. In skill mode it is also the checkout itself, which
+ * is why config.json and state/ there are the repo's gitignored root paths.
+ */
+export function gylabDir(): string {
+  return join(home(), ".gylab", "gen-image");
+}
+
+/**
+ * Which config.json to read: GEN_IMAGE_CONFIG if set, else ~/.gylab/gen-image/config.json.
  * Resolved per call rather than at import, so an embedder (container entrypoint, test harness)
  * can point us at a different file before the first loadConfig() without import-order games.
  */
 export function configPath(): string {
   const override = process.env.GEN_IMAGE_CONFIG?.trim();
-  return override ? resolve(expandTilde(override)) : resolve(PROJECT_DIR, "config.json");
+  return override ? resolve(expandTilde(override)) : join(gylabDir(), "config.json");
 }
 
 /** How the gpt-image-2 backend drives the Codex CLI's built-in image_gen (subscription). */
@@ -78,10 +94,10 @@ export interface Config {
   /** Self-located project root (not from JSON). */
   projectDir: string;
   /**
-   * Where logs/, claims/ and render-slots/ live (~ expanded). Defaults INSIDE the checkout, which
-   * means one checkout per machine: claims and slots are machine-wide arbitration, so two
-   * checkouts would each arbitrate against themselves only. Accepted constraint — a container
-   * overrides this to a mounted volume.
+   * Where logs/, claims/ and render-slots/ live (~ expanded). Defaults to ~/.gylab/gen-image/state,
+   * under the same HOME as the default CODEX_HOME: claims arbitrate that home's generated_images,
+   * so every checkout must share one registry. Two stateDirs against one CODEX_HOME would each
+   * arbitrate against themselves only — a container overrides both to mounted volumes together.
    */
   stateDir: string;
   /**
@@ -111,8 +127,8 @@ export interface Config {
 
 /** Expand a leading "~" or "~/" to the user's home directory. */
 export function expandTilde(p: string): string {
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+  if (p === "~") return home();
+  if (p.startsWith("~/")) return join(home(), p.slice(2));
   return p;
 }
 
@@ -154,7 +170,7 @@ function parseConfig(raw: unknown): Config {
   const output = asObj(r.output);
   return {
     projectDir: PROJECT_DIR,
-    stateDir: expandTilde(str(r, "stateDir", join(PROJECT_DIR, "state"))),
+    stateDir: expandTilde(str(r, "stateDir", join(gylabDir(), "state"))),
     maxConcurrentRenders: clampInt(num(r, "maxConcurrentRenders", 20), 1, 200),
     keepSourceImages: bool(r, "keepSourceImages", false),
     maxRetries: clampInt(num(r, "maxRetries", 1), 0, 5),
@@ -166,7 +182,7 @@ function parseConfig(raw: unknown): Config {
     codex: {
       bin: str(codex, "bin", "codex"),
       model: str(codex, "model", "gpt-6.1-sol"),
-      home: expandTilde(str(codex, "home", join(homedir(), ".codex"))),
+      home: expandTilde(str(codex, "home", join(home(), ".codex"))),
       sandbox: str(codex, "sandbox", "workspace-write"),
       network: bool(codex, "network", true),
       timeoutMs: num(codex, "timeoutMs", 900_000),
